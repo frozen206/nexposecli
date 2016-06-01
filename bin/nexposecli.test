@@ -1,0 +1,6 @@
+#!/usr/bin/env ruby
+
+require 'nexposecli'
+
+chatter = Nexposecli::Chatter.new  
+chatter.say_hello  

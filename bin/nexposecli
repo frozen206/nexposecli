@@ -1,6 +1,1719 @@
 #!/usr/bin/env ruby
+##############################################################################
+#
+# File:    	evm.rb
+#
+# Author:  	Erik Gomez <gomeze@pobox.com>
+# 		Erik Gomez <erik_gomez@rapid7.com>
+#
+# Purpose: 	UF ISC EVM Administrative tasks via cli 
+#
+# Base Revision:	$Id:$ (20141030@1227.01)
+# Revision:	$Id:$ (20160426@1315.01)
+#
+#   Usage: ./evm.rb <action> <target> [<args>] 
+#
+#   -v		verbose
+#   --help	help
+#
+##############################################################################
+require 'rubygems'
+require 'nexpose'
+require 'socket'
+require 'digest'
+require 'securerandom'
+require 'netaddr'
+require 'logger'
+require 'yaml'
+require 'csv'
+require 'set'
+# for debug, this dumps the ruby objects to STDOUT
+require 'pp'
 
-require 'nexposecli'
+##############################################################################
+# Set Const
 
-chatter = Nexposecli::Chatter.new  
-chatter.say_hello  
+# Allowed Ops by field, in Set form
+CVSS_SCORE_OPS = Set["IS", "IS_NOT", "IN_RANGE", "GREATER_THAN", "LESS_THAN"]
+IP_RANGE_OPS   = Set["IN", "NOT_IN"]
+OS_OPS         = Set["CONTAINS", "NOT_CONTAINS", "IS_EMPTY", "IS_NOT_EMPTY"]
+RISK_SCORE_OPS = Set["IS", "IS_NOT", "IN_RANGE", "GREATER_THAN", "LESS_THAN"]
+SITE_ID_OPS    = Set["IN", "NOT_IN"]
+SCAN_DATE_OPS  = Set["ON_OR_BEFORE", "ON_OR_AFTER", "BETWEEN", "EARLIER_THAN", "WITHIN_THE_LAST"]
+
+# Set default var values
+$debug = false
+uf_scanners = ''
+
+@logpath = "./logs/"
+@scanpath = "./"
+# Attempting to use logfile per month: @logfile = "evm" + Time.now.strftime("%Y%m%d_%H%M%S") + ".log"
+@logfile = "evm" + Time.now.strftime("%Y%m") + ".log"
+@evm_reqid = SecureRandom.hex
+@nsc_server = "<server>" 
+@nsc_user   = "<user>"
+@nsc_passwd = "<pass>"
+@nsc_sites = Hash.new
+
+scan_task_sleep = 300
+max_scan_task_attempts = 3
+
+##############################################################################
+# Base procs
+# wrapped puts for debug control
+def uputs( facility, ulog )
+  # add string validation
+  @logger.info( @nsc_server + "," + @evm_reqid + " [" + facility.to_s + "] " + ulog.to_s)
+  if $debug
+    puts "[" + facility.to_s + "]" + ulog.to_s
+  end
+end
+
+# wrapped pp for debug control
+def upp( uobj )
+  if $debug
+    pp uobj
+  end
+end
+
+# UF bail vs exit
+def ubail(retval, msg)
+  uputs("BAIL", msg.to_s)
+  exit(retval)
+end
+
+# download, needs lots of work to ensure write path is clean and no overwrites
+def download(url, filename, nsc)
+  return nil if url.nil? or url.empty?
+  uri = URI.parse(url)
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.verify_mode = OpenSSL::SSL::VERIFY_NONE # XXX: security issue
+  headers = {'Cookie' => "nexposeCCSessionID=#{nsc.session_id}"}
+  resp = http.get(uri.path, headers)
+
+  if filename == "NONE"
+    resp.body
+  else
+    file = File.open(filename, "w")
+    file.write(resp.body)
+    file.close
+
+    filename
+  end
+end
+
+def read_config(conf)
+  # add check for file existence and perms
+  config = YAML.load_file(conf)
+
+  @nsc_server = config["config"]["server"]
+  @nsc_user   = config["config"]["user"]
+  @nsc_passwd   = config["config"]["password"]
+  @nsc_sites = config["sites"]
+end
+
+def scan_activity()
+  scanner_activity = Hash.new
+  # scan activity
+  scan_activity = @nsc.scan_activity
+  upp scan_activity
+  if scan_activity.length > 0
+    scan_activity.each do |scan|
+      timeDiff = DateTime.now.strftime('%s').to_i - scan.start_time.strftime('%s').to_i
+        tdSecs = timeDiff
+        tdHours = tdSecs / 3600
+        tdSecs -= tdHours * 3600
+        tdMins = tdSecs / 60
+        tdSecs -= tdMins * 60
+      timeDiffStr = "#{tdHours} hours, #{tdMins} minutes and #{tdSecs} seconds"
+      act_str = "Scan Id: #{scan.scan_id.to_s.ljust(5)} site: #{scan.site_id.to_s.ljust(4)} status: [#{scan.status.to_s.ljust(10)}]" +
+      " engine: #{scan.engine_id.to_s.ljust(3)} start time:#{scan.start_time} run time:#{timeDiffStr}"
+      if scanner_activity.has_key?scan.engine_id.to_s
+        scanner_activity[scan.scan_id.to_s] = { :site_id => scan.site_id.to_s, :status => scan.status.to_s, :scan_engine_id => scan.engine_id.to_s, :timeDiff => timeDiff, :act_str => act_str }
+      else
+        scanner_activity[scan.scan_id.to_s] = Hash.new
+        scanner_activity[scan.scan_id.to_s] = { :site_id => scan.site_id.to_s, :status => scan.status.to_s, :scan_engine_id => scan.engine_id.to_s, :timeDiff => timeDiff, :act_str => act_str }
+      end
+    end
+  end
+  scanner_activity
+end
+
+def valid_cidrv4(cstr)
+  if /^[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\/([1-2]?[0-9]|3[0-2])$/ =~ cstr
+    true
+  else
+    false
+  end
+end
+
+def valid_ipv4(ipstr)
+  if /^[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]$/ =~ ipstr
+    true
+  else
+    false
+  end
+end
+
+def valid_ipv4_dottedcsv(ipstr)
+  if /^[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9],[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]$/ =~ ipstr
+    true
+  else
+    false
+  end
+end
+
+def valid_ipv4_dottedcolon(ipstr)
+  if /^[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]:[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]$/ =~ ipstr
+    true
+  else
+    false
+  end
+end
+
+def valid_ipv4_dotteddashed(ipstr)
+  if /^[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]-[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]$/ =~ ipstr
+    true
+  else
+    false
+  end
+end
+
+def valid_ipv4_dotteddashedshort(ipstr)
+  if /^[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]\.[1-2]?[0-9]?[0-9]-[1-2]?[0-9]?[0-9]$/ =~ ipstr
+    true
+  else
+    false
+  end
+end
+
+def ip2rangev4(cstr)
+  rangev4 = cstr.to_s + "," + cstr.to_s
+end
+
+def cidr2rangev4(cstr)
+  rangev4 = ""
+  netblock = NetAddr::CIDR.create(cstr)
+  rangev4 = netblock.first.to_s + "," + netblock.last.to_s
+end
+
+def dotteddashed2rangev4(cstr)
+  # consider validating the low,high values in order
+  rangev4 = cstr.split('-').first.to_s + "," + cstr.split('-').last.to_s
+end
+
+def dotteddashedshort2rangev4(cstr)
+  # consider validating the low,high values in order
+  ipv4l = cstr.split('-').first.to_s
+  ipv4h4th = cstr.split('-').last.to_s
+  ipv4h = ipv4l.sub(/\d+\Z/) {|x| x = ipv4h4th }
+  rangev4 = ipv4l.to_s + "," + ipv4h.to_s
+end
+
+def is_numeric(object)
+    true if Float(object) rescue false
+end
+
+def validate_searchstring(sfstr)
+  # Expectng field:op format for sfstr
+  valid_searchstring = nil
+  valid_search_field = nil
+  valid_search_op    = nil
+
+  # Valid search fields and operators:
+  # CVSS_SCORE = IS, IS_NOT, IN_RANGE, GREATER_THAN, LESS_THAN (Float 0.0-10.0)
+  # IP_RANGE   = IN, NOT_IN (IPv4 dotted notation)
+  # OS         = CONTAINS, NOT_CONTAINS, IS_EMPTY, IS_NOT_EMPTY
+  # RISK_SCORE = IS, IS_NOT, IN_RANGE, GREATER_THAN, LESS_THAN (Fixnum)
+  # SITE_ID    = IN, NOT_IN (Fixnum)
+  # SCAN_DATE  = ON_OR_BEFORE, ON_OR_AFTER, BETWEEN (Value::ScanDate::FORMAT dates)
+  # SCAN_DATE  = EARLIER_THAN, WITHIN_THE_LAST (Fixnum days)
+
+  # Grab search field and op
+  search_field = sfstr.split(':').first.to_s
+  search_op    = sfstr.split(':').last.to_s
+
+  # Case by supported Search fields
+  isValid = false
+  case search_field
+  when "CVSS_SCORE"
+     isValid = true if CVSS_SCORE_OPS.include?(search_op)
+  when "IP_RANGE"
+     isValid = true if IP_RANGE_OPS.include?(search_op)
+  when "OS"
+     isValid = true if OS_OPS.include?(search_op)
+  when "RISK_SCORE"
+     isValid = true if RISK_SCORE_OPS.include?(search_op)
+  when "SITE_ID"
+     isValid = true if SITE_ID_OPS.include?(search_op)
+  when "SCAN_DATE"
+     isValid = true if SCAN_DATE_OPS.include?(search_op)
+  else
+     # Unsupported search field
+  end
+  if isValid
+     valid_search_field = search_field
+     valid_search_op = search_op
+     valid_searchstring = valid_search_field + "," + valid_search_op 
+  else
+     valid_searchstring = "ERROR" 
+  end
+end
+
+##############################################################################
+#
+# Conf
+#
+##############################################################################
+# Parse cli and config options passed
+ARGS = %q{ 
+  - comment               : General Options
+
+  - name                  : help
+    desc                  : Print help
+
+  - name                  : verbose
+    short                 : v
+    desc                  : Run verbosely
+
+  - comment               : EVM Administrative Actions
+
+  - name                  : create
+    short                 : c
+    desc                  : The create action is used for new objects
+
+  - name                  : list
+    short                 : l
+    desc                  : The list action is used to list of objects of the same type
+
+  - name                  : show
+    short                 : s
+    desc                  : The show action is used to display details of a single object
+
+  - name                  : update
+    short                 : u
+    desc                  : The update action is used to change properties of a single object
+
+  - name                  : delete
+    short                 : d
+    desc                  : The delete action is used to delete a single object
+
+  - name                  : run
+    desc                  : The run action is only used to issue commands to the COMMAND object
+
+  - comment               : EVM Action Targets
+
+  - name                  : USER
+    short                 : U
+    desc                  : The USER target is used to alter or create the USER object
+
+  - name                  : ROLE
+    short                 : L
+    desc                  : The ROLE target is used to alter or create the ROLE object
+
+  - name                  : ENGINE
+    short                 : E
+    desc                  : The ENGINE target is used to alter or create the SCAN ENGINE object
+
+  - name                  : POOL
+    short                 : P
+    desc                  : The POOL target is used to alter or create the POOL object
+
+  - name                  : SCAN
+    short                 : S
+    desc                  : The SCAN target is used to alter or create the SCAN object
+
+  - name                  : SITE
+    short                 : T
+    desc                  : The SITE target is used to alter or create the SITE object
+
+  - name                  : ASSET
+    short                 : A
+    desc                  : The ASSET target is used to alter or create the ASSET object
+
+  - name                  : DASSET
+    short                 : D
+    desc                  : The DASSET target is used to alter or create the DASSET object
+
+  - name                  : TAG
+    short                 : G
+    desc                  : The TAG target is used to alter or create the TAG object
+
+  - name                  : REPORT
+    short                 : R
+    desc                  : The REPORT target is used to alter or create the REPORT object
+
+  - name                  : VULN
+    short                 : V
+    desc                  : The VULN target is used to alter or create the VULN object
+
+  - name                  : CONSOLE
+    desc                  : The CONSOLE target is used to alter the CONSOLE nsc connection object
+
+  - name                  : COMMAND
+    short                 : C
+    desc                  : The COMMAND target is only used in conjunction with the --run action
+    required              : true
+
+  - comment               : EVM Action Argument Values
+
+  - name                  : host
+    short                 : h
+    desc                  : The target ip or host to be acted upon by the action
+    required              : true
+
+  - name                  : port
+    short                 : p
+    desc                  : The target port to be acted upon by the action
+    required              : true
+
+  - name                  : name
+    short                 : n
+    desc                  : The target object name
+    required              : true
+
+  - name                  : fullname
+    desc                  : The target object full name
+    required              : true
+
+  - name                  : newname
+    desc                  : The target object new name
+    required              : true
+
+  - name                  : description
+    short                 : t
+    desc                  : The text based description of the object being acted upon
+    required              : true
+
+  - name                  : id
+    short                 : i
+    desc                  : The object id being acted upon
+    required              : true
+
+  - name                  : site
+    desc                  : The site id of the object being acted upon
+    required              : true
+
+  - name                  : range
+    short                 : r
+    desc                  : The comma separated (begin,end) range of ip addresses to be acted upon
+    required              : true
+
+  - name                  : targets
+    desc                  : The network block or ip addresses to be acted upon, in CIDRv4, dotted dashed, or ip format
+    required              : true
+
+  - name                  : argv
+    short                 : g
+    desc                  : Argument vector for the action, in the form key:value pairs
+    required              : true
+
+  - name                  : filter
+    short                 : f
+    desc                  : Filters which are applied to the action, in the form key:value pairs
+    required              : true
+
+  - name                  : filterv
+    desc                  : Filter value which are applied to the action. Formate varies by filter type
+    required              : true
+
+  - name                  : action
+    short                 : a
+    desc                  : The subaction to be performed within the target action
+    required              : true
+
+  - name                  : attempts
+    desc                  : The max number of attempts for iterative actions
+    required              : true
+
+  - name                  : loop_sleep
+    desc                  : The sleep interval in seconds between action iterations
+    required              : true
+
+  - comment               : Nexpose Console credentials
+
+  - name                  : config
+    desc                  : The config yaml file containing the connection details of the Nexpose Console Server
+    required              : true
+
+  - name                  : nsc_server
+    desc                  : The ip or hostname of the Nexpose Console Server
+    required              : true
+
+  - name                  : nsc_user
+    desc                  : The username to login to the Nexpose Console Server
+    required              : true
+
+  - name                  : nsc_pass
+    desc                  : The password to login to the Nexpose Console Server
+    required              : true
+
+  - name                  : logpath
+    desc                  : The path for writing the logs
+    required              : true
+
+  - name                  : scanpath
+    desc                  : The path for exported/imported scans
+    required              : true
+}
+
+
+##############################################################################
+#
+# Main
+#
+##############################################################################
+# Args parsing
+ap = Nexposecli::ArgParse.new( ARGS )
+
+begin
+  args = ap.parse
+rescue Nexposecli::ArgParse::InvalidOption => e
+  STDERR.puts e
+  STDERR.puts ap.usage
+  exit(-1)
+end
+
+# start the logger
+if args.logpath
+  # consider input validation, to avoid sec issues
+  @logpath = args.logpath.to_s
+end
+@logger = Logger.new(@logpath + @logfile)
+@logger.level = Logger::INFO
+uputs("LOG", "Automation tasks being run from: " + Socket.gethostname.to_s)
+uputs("LOG", "Automation tasks being logged to: #{@logpath.to_s + @logfile.to_s}")
+
+if args.scanpath
+  # consider input validation, to avoid sec issues
+  @scanpath = args.scanpath.to_s
+end
+
+$debug = TRUE if args.verbose
+uputs("CLI", "Command-line args parsed for #{$0}")
+uputs("CLI", "Args: #{args.inspect}")
+
+if args.help
+  uputs("CLI", "Help was requested, displaying usage and exiting")
+  puts ap.usage("#{$0} [options]")
+  exit(0)
+end
+
+# test for a single action
+uputs("CLI", "Checking for the requested action")
+@action = 0
+@action |= 1 if args.create
+@action |= 2 if args.list
+@action |= 4 if args.show
+@action |= 8 if args.update
+@action |= 16 if args.delete
+@action |= 32 if args.run
+uputs("ACTION", "The requested action value is: #{@action.to_s}")
+raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32].include?(@action)
+
+uputs("TARGET", "Checking for the requested target")
+@target = 0
+@target |= 1   if args.USER
+@target |= 2   if args.ENGINE
+@target |= 4   if args.POOL
+@target |= 8   if args.SCAN
+@target |= 16  if args.SITE
+@target |= 32  if args.ASSET
+@target |= 64  if args.REPORT
+@target |= 128 if args.VULN
+@target |= 256 if args.COMMAND
+@target |= 512  if args.DASSET
+@target |= 1024  if args.TAG
+@target |= 2048  if args.CONSOLE
+@target |= 4096  if args.TEMPLATE
+@target |= 8192  if args.ROLE
+uputs("TARGET", "The requested target value is: #{@target.to_s}")
+raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192].include?(@target)
+
+# nsc conn vars
+unless (
+  (args.nsc_server && args.nsc_user && args.nsc_pass) || args.config
+)
+  raise 'Please supply Nexpose Console connection parameters listed under --help'
+end
+# nsc connection details
+if args.config
+  uputs("CONF", "Reading config file: #{args.config.to_s}")
+  read_config(args.config.to_s)
+else
+  uputs("CONF", "Using NSC creds from CLI args, be sure to clear shell history to avoid creds disclosure")
+  @nsc_server = args.nsc_server.to_s 
+  @nsc_user   = args.nsc_user.to_s
+  @nsc_passwd = args.nsc_pass.to_s
+end
+
+# Make the initial connection to the NSC server
+uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
+begin
+  @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+rescue SystemCallError => e
+  # EJG add conditional api error handling...
+  uputs("CONNECT", "An error occurred while attempting to connect to the specified server: #{e.to_s}")
+  STDERR.puts "ERROR [ " + e.to_s + " ]"
+  exit(-1)
+end
+uputs("CONNECT", "Connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s} successful")
+
+uputs("LOGIN", "Attempting login to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
+begin
+  @nsc.login
+rescue Nexpose::APIError => e
+  # EJG add conditional api error handling...
+  uputs("LOGIN", "An error occurred while attempting to connect to the specified server: #{e.to_s}")
+  STDERR.puts "ERROR [ " + e.to_s + " ]"
+  exit(-1)
+end
+
+if @nsc.session_id
+  uputs("CONNECT", 'NSC Login Successful')
+else
+  uputs("CONNECT", 'NSC Login Failed')
+  exit
+end
+
+# opted to keep actions grouped by the target
+case @target
+when 1   # TARGET USER
+  case @action
+  when 1   # create
+    uputs("ACTION", 'create USER action requested')
+    name = args.name
+    full_name = "#{args.fullname}"
+    password = "nxpassword"
+
+    user = Nexpose::User.new(name,
+                             full_name, 
+                             password, 
+                             role_name = 'user', 
+                             id = -1, 
+                             enabled = 1, 
+                             email = nil, 
+                             all_sites = false, 
+                             all_groups = false, 
+                             token = nil)
+    pp user
+    puts 'Not yet saved'
+    user.save(@nsc)
+    pp user
+  when 2   # list
+    uputs("ACTION", 'list USER action requested')
+    user_listing = @nsc.list_users
+    pp user_listing
+  when 4   # show
+    uputs("ACTION", 'show USER action requested')
+    userid = args.id.to_str
+    user = Nexpose::User.load(@nsc, userid)
+    pp user
+  when 8   # update
+    uputs("ACTION", 'update USER action requested')
+    puts 'Not yet implemented'
+  when 16  # delete
+    uputs("ACTION", 'delete USER action requested')
+    puts 'Not yet implemented'
+  else
+    uputs("ACTION", 'The action requested is not implemented for target')
+    puts 'The action requested is not implemented for target'
+  end
+when 2   # TARGET ENGINE
+  case @action
+  when 1   # create
+    uputs("ACTION", 'create ENGINE action requested')
+    puts 'Not yet implemented'
+  when 2   # list
+    uputs("ACTION", 'list ENGINE action requested')
+    uf_scanners = @nsc.engines
+    if uf_scanners.length > 0
+      if args.action
+        case args.action
+        when "summary", "status"
+          scanner_activity = scan_activity()
+          nseSynopsis = Nexpose::DataTable._get_json_table(@nsc, '/data/engines', { 'sort' => -1, 'dir' => -1, 'startIndex' => -1, 'results' => -1, 'table-id' => 'engine-listing'})
+          upp nseSynopsis
+          nseSynopsis.each do |eng|
+            puts "\t-Id: #{eng['id']}\tStatus: #{eng['status'].to_s.ljust(10)} Last Update(id): #{eng['lastUpdateDate']}(#{eng['lastUpdateID']})\t Name: #{eng['name']}\n"
+            # EJG NEEDS work
+            if scanner_activity.has_key?(eng['Engine ID'].to_i)
+              scanner_activity[eng['Engine ID'].to_i].each do |scan| puts "\t " + scan end
+            end
+          end
+        else
+        end
+      else
+        uf_scanners.each do |scanner|
+          puts("\t- status: #{scanner.status}\t id:#{scanner.id}\t name:'#{scanner.name}'\n")
+        end
+      end
+      puts("\nNOTE: The Scan Engine Ids are used for Scan Engine Pool create, update, and delete.\n")
+    else
+      puts("This Nexpose Security Console has no defined Scan Engines.\n")
+    end
+  when 4   # show
+    uputs("ACTION", 'show ENGINE action requested')
+    puts 'Not yet implemented'
+  when 8   # update
+    uputs("ACTION", 'update ENGINE action requested')
+    puts 'Not yet implemented'
+  when 16  # delete
+    uputs("ACTION", 'delete ENGINE action requested')
+    puts 'Not yet implemented'
+  else
+    uputs("ACTION", 'The action requested is not implemented for target')
+    puts 'The action requested is not implemented for target'
+  end
+when 4   # TARGET POOL
+  case @action
+  when 1   # create
+    uputs("ACTION", 'create POOL action requested')
+    raise 'Please submit the Scan Engine Ids for the Pool definition, see --help' unless ( args.id )
+    raise 'Please submit the Scan Engine Pool name, see --help' unless ( args.name )
+    uf_scanners = @nsc.engines # get the scan engine list to map name by id
+    # consider sanitizing the args.name
+    pool_name = args.name
+    pool = Nexpose::EnginePool.new(pool_name, 'silo')
+    engine_ids = args.id
+    engine_ids.each_line(',') {|s| engine = uf_scanners.find{ |scanner| scanner.id == s.to_i }; uputs("ACTION", "Adding Scan Engine: [#{engine.name}]"); pool.add(engine.name)}
+    pool.save(@nsc)
+    puts("The scan engine pool [ #{pool_name} ] was created and has the id: #{pool.id}")
+    uputs("ACTION", 'create POOL action completed for pool name: #{pool_name}, id: #{pool.id}')
+  when 2   # list
+    uputs("ACTION", 'list POOL action requested')
+    pool_listing = @nsc.list_engine_pools
+    if pool_listing.length > 0 
+      pool_listing.each do |pool|
+        puts("Pool: id:#{pool.id}\tname:#{pool.name}\n")
+        upp pool
+      end
+    else
+      puts("This Nexpose Security Console has no defined Scan Engine Pools.\n")
+    end
+  when 4   # show
+    uputs("ACTION", 'show POOL action requested')
+    raise 'Please submit the Scan Engine Pool Id and Pool Name, see --help' unless ( args.id && args.name )
+    pool_name = args.name
+    pool_id = args.id
+    pool = Nexpose::EnginePool.load(@nsc, pool_name)
+    puts "\nScan Engine Pool name: [#{pool.name}] and id: [#{pool.id}] has the following Scan Engines as members:\n\n"
+    pool.engines.each do |engine|
+      puts "\t- Scan Engine name: [#{engine.name}] id: [#{engine.id}] at: [#{engine.address}]\n"
+    end
+    puts "\n"
+    upp pool
+  when 8   # update
+    uputs("ACTION", 'update POOL action requested')
+    puts 'Not yet implemented'
+  when 16  # delete
+    uputs("ACTION", 'delete POOL action requested')
+    raise 'Please submit the Scan Engine Pool Id  and Pool Name, see --help' unless ( args.id && args.name )
+    pool_name = args.name
+    pool_id = args.id
+    pool = Nexpose::EnginePool.new(pool_name, 'silo', pool_id)
+    pool.delete(@nsc)
+    uputs("POOL", "The scan engine pool [ #{pool_name} ] with the id: #{pool.id} was deleted\n")
+  else
+    uputs("ACTION", 'The action requested is not implemented for target')
+    puts 'The action requested is not implemented for target'
+  end
+when 8   # TARGET SCAN
+  case @action
+  when 1   # create
+    uputs("SCAN", 'create SCAN action requested')
+    unless (
+      args.id != nil && ( args.range || args.targets )
+    )
+      raise 'Please supply the site id and ip range, or targets to scan, see --help'
+    end
+
+    # CLI args for scan task attempts and sleep interval
+    if args.attempts
+      max_scan_task_attempts = args.attempts.to_i
+    end
+    if args.loop_sleep
+      scan_task_sleep = args.loop_sleep.to_i
+    end
+
+    # target arrays
+    targets_sha2 = false
+    target_cursor = 0
+    targets = []
+    target_ranges = []
+
+    # read all targets into an array, from cli arg or file
+    if args.targets
+      # expecting fields: target,...
+      uputs("SCAN", "Targets provided within: #{args.targets} file")
+      # look for .<sha2 digest> of targets state file
+      targets_sha2 = Digest::SHA2.file(args.targets).hexdigest
+      if File.file?("." + targets_sha2)
+        # read the state file
+        target_cursor = File.open("." + targets_sha2).first.to_i
+        uputs("SCAN", "A state file was found for #{args.targets}, the last completed task [#{target_cursor.to_s}]")
+      end
+
+      targets = CSV.read(args.targets, :headers=>true)
+      targets.each do |target|
+        target_ranges.push(target['target'].to_s)
+      end
+    elsif args.range
+      targeth = { "type" => "cli_range", "subnetid" => "0", "target" => args.range.to_s }
+      targets.push(targeth)
+      target_ranges.push(args.range.to_s)
+    else
+      STDERR.puts "No targets defined, see --help"
+      exit(-1)
+    end
+
+    ## BEGIN targets loop
+    num_ranges = target_ranges.length
+    range_ctr = 0
+    target_ranges.each do |target_range|
+      range_ctr += 1
+      if range_ctr <= target_cursor
+        puts "Skipping scan task #{range_ctr}, a state file existed.\n"
+        next
+      end
+      target_complete = false
+      uputs("SCAN:#{range_ctr}", "Preparing SiteDevicesScan Type:#{targets[range_ctr - 1]['type']} Subnet Id:#{targets[range_ctr - 1]['subnetid']} Target:#{targets[range_ctr - 1]['target']}")
+      uputs("SCAN:#{range_ctr}", "Target details Type:#{targets[range_ctr - 1]['type']} Subnet Id:#{targets[range_ctr - 1]['subnetid']} Resource Id:#{targets[range_ctr - 1]['resourceid']} Description:#{targets[range_ctr - 1]['description']}")
+
+      # Make a connection and login to the NSC server
+      uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
+      begin
+        @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+        @nsc.login
+      rescue SystemCallError => e
+        # EJG add conditional api error handling and consider wrapping coonect/login into a method...
+        uputs("LOGIN", "An error occurred while attempting to connect to the specified server: #{e.to_s}")
+        STDERR.puts "ERROR [ " + e.to_s + " ]"
+        exit(-1)
+      end
+
+      if @nsc.session_id
+        uputs("SCAN CONNECT", 'NSC Login Successful')
+      else
+        uputs("SCAN CONNECT", 'NSC Login Failed')
+        exit
+      end
+
+      # grab the site id
+      scan_site_id = args.id.to_i
+      if scan_site_id == 0 && targets[range_ctr - 1].has_key?("site")
+        scan_site_id = @nsc_sites[targets[range_ctr - 1]['site']]
+        uputs("SCAN:#{range_ctr}", "Scan Site Id from conf and targets file is being used: #{scan_site_id}")
+      end
+
+      site_engine_id = 0
+      scan_hosts = Array.new
+      site = ""
+
+      # Obtain the Site details based on the provided scan site id
+      begin
+        site = Nexpose::Site.load(@nsc, scan_site_id)
+        site_engine_id = site.engine_id
+      rescue Nexpose::APIError => e
+        # EJG add conditional api error handling...
+        STDERR.puts "ERROR [ " + e.to_s + " ]"
+        exit(-1)
+      end
+
+      # check if pool or engine... add
+      is_pool = true
+      uf_scanners = @nsc.engines
+      if uf_scanners.collect{|scanner| scanner.id}.include?(site_engine_id)
+        is_pool = false
+      end
+
+      # Obtain the Scan Engine Pool definition for the provided scan_site_id
+      pool_name = ""
+      pool_id = 0
+      if is_pool
+        pool_listing = @nsc.list_engine_pools
+        if pool_listing.length > 0 
+          upp pool_listing
+          pool_listing.each do |pool|
+            if pool.id.to_s.include?(site_engine_id.to_s)
+              pool_id = pool.id
+              pool_name = pool.name
+            end
+          end
+        else
+          STDERR.puts "No Scan Engine Pools Defined, the id maybe a Scan Engine"
+          exit(-1)
+        end
+      end
+
+      if is_pool
+        pool = Nexpose::EnginePool.load(@nsc, pool_name)
+        pool_size = 0
+        pool_size = pool.engines.length
+      else
+        pool_size = 1
+      end
+      upp pool_size
+
+      ## BEGIN Single Scan task
+      scan_task = true
+      scan_task_retries = 1
+      new_scan = ""
+
+      # In preparation for an iterative scan task attempt, close the nsc session
+      logout_success = @nsc.logout
+
+      while scan_task && ( scan_task_retries <= max_scan_task_attempts ) do
+        puts "- entering while scan_task loop"
+
+        # Make a connection and login to the NSC server
+        uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
+        begin
+          @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+          @nsc.login
+        rescue SystemCallError => e
+          # EJG add conditional api error handling and consider wrapping coonect/login into a method...
+          uputs("LOGIN", "An error occurred while attempting to connect to the specified server: #{e.to_s}")
+          STDERR.puts "ERROR [ " + e.to_s + " ]"
+          exit(-1)
+        end
+
+        if @nsc.session_id
+          uputs("SCAN CONNECT2", 'NSC Login Successful')
+        else
+          uputs("SCAN CONNECT2", 'NSC Login Failed')
+          exit
+        end
+
+        # debug
+        puts Time.now.strftime("%Y%m%d_%H%M%S") + " Attempt: #{scan_task_retries} for target range: #{range_ctr} of: #{num_ranges}\n"
+        # Now check the current scan activity to determine if availability is good for the provided site
+        scan_activity = @nsc.scan_activity
+        upp scan_activity
+        scans_running = scan_activity.length
+        site_scans_running = 0
+        site_scan_ids = []
+        scan_activity.each do |scan_summary|
+          act_str = "Scan Id: #{scan_summary.scan_id.to_s.ljust(5)} site: #{scan_summary.site_id.to_s.ljust(4)} status: [#{scan_summary.status.to_s.ljust(10)}]" +
+          " engine: #{scan_summary.engine_id.to_s.ljust(3)} start time: #{scan_summary.start_time}"
+          uputs("SCAN_ACT:#{range_ctr}", act_str)
+          if scan_summary.site_id == scan_site_id && scan_summary.status.include?("running")
+            site_scan_ids.push(scan_summary.scan_id)
+            site_scans_running += 1
+          end
+        end
+
+        uputs("SCAN:#{range_ctr}", "Current Activity- Site:#{scan_site_id} isPool:#{is_pool.to_s} Pool:#{pool_id},#{pool_name} Pool Size:#{pool_size} Running Scans:#{scans_running} Site Scans:#{site_scans_running}")
+        nsc_err_flag = false
+        if site_scans_running < pool_size
+          if valid_ipv4(target_range)
+            valid_range = ip2rangev4(target_range)
+          elsif valid_cidrv4(target_range)
+            valid_range = cidr2rangev4(target_range)
+          elsif valid_ipv4_dottedcsv(target_range)
+            # add dotted csv validation for low,high order
+            valid_range = target_range
+          elsif valid_ipv4_dotteddashed(target_range)
+            valid_range = dotteddashed2rangev4(target_range)
+          elsif valid_ipv4_dotteddashedshort(target_range)
+            valid_range = dotteddashedshort2rangev4(target_range)
+          else
+            uputs("SCAN:#{range_ctr}", "API ERROR: An invalid target range was provided: #{target_range}")
+            next
+            # ubail(-1, "An invalid target range was provided: #{target_range}")
+          end
+
+          uputs("SCAN:#{range_ctr}", "Scan requested type/subnet id:#{targets[range_ctr - 1]['type']}/#{targets[range_ctr - 1]['subnetid']} target range: #{target_range}")
+          uputs("SCAN:#{range_ctr}", "Scan requested type/subnet id:#{targets[range_ctr - 1]['type']}/#{targets[range_ctr - 1]['subnetid']} validated target range: #{valid_range}")
+
+          # scan_hosts.push( { :range => valid_range.to_s } )
+          scan_hosts.push( Nexpose::IPRange.new(valid_range.split(',').first.to_s, valid_range.split(',').last.to_s) )
+          begin
+            # using nexpose gem 0.5.4 - EJG, and new changes
+            new_scan = @nsc.scan_assets(scan_site_id, scan_hosts)
+          rescue Nexpose::APIError => e
+            STDERR.puts e
+            uputs("SCAN:#{range_ctr}", "API ERROR: [#{e}]")
+            nsc_err_flag = true
+            scan_task_retries += 1
+            uputs("SCAN:#{range_ctr}", "...sleeping due to a recoverable error... for scan task: #{range_ctr} [#{target_range}] next attempt: #{scan_task_retries} in #{scan_task_sleep} secs")
+            sleep(scan_task_sleep)
+          end
+
+          if !nsc_err_flag
+            uputs("SCAN:#{range_ctr}", "Scanning target range: #{range_ctr} of: #{num_ranges}")
+            scan_task = false
+            target_complete = true
+            nsc_err_flag = false
+          end
+        else
+          puts "- entering else condition for no scanners"
+          logout_success = @nsc.logout
+          # no scan resources available, sleep and wait until retires/timeout exhausted
+          if scan_task_retries >= max_scan_task_attempts
+            puts "No scan resources available\n"
+            exit(-1)
+          end
+          scan_task_retries += 1
+          uputs("SCAN:#{range_ctr}", "...sleeping... for scan task: #{range_ctr} [#{target_range}] next attempt: #{scan_task_retries} in #{scan_task_sleep} secs")
+          sleep(scan_task_sleep)
+        end
+      end
+      # END of Single Range Scan task
+
+      if target_complete
+         if targets_sha2
+            File.open("." + targets_sha2, 'w') {|f| f.write(range_ctr) }
+         end
+
+         # Make a connection and login to the NSC server
+         uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
+         begin
+           @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+           @nsc.login
+         rescue SystemCallError => e
+           # EJG add conditional api error handling and consider wrapping coonect/login into a method...
+           uputs("LOGIN", "An error occurred while attempting to connect to the specified server: #{e.to_s}")
+           STDERR.puts "ERROR [ " + e.to_s + " ]"
+           exit(-1)
+         end
+
+         if @nsc.session_id
+            uputs("ACT CONNECT", 'NSC Login Successful')
+         else
+            uputs("ACT CONNECT", 'NSC Login Failed')
+            exit
+         end
+
+         if new_scan.kind_of? Nexpose::Scan
+           uputs("SCAN:#{range_ctr}", "The scan id: #{new_scan.id.to_s} for Subnet Id:#{targets[range_ctr - 1]['subnetid']} and the target range: #{target_range.to_s} launched after #{scan_task_retries} attempt(s) on engine id: #{new_scan.engine.to_s}")
+         else
+           uputs("SCAN:#{range_ctr}", "The new scan for Subnet Id:#{targets[range_ctr - 1]['subnetid']} and the target range: #{target_range.to_s} encountered an error.")
+           puts "The new scan encountered an error. Unable to report on the scan id.\n"
+         end
+      end
+      puts "End of a single scan task\n"
+
+      end
+      logout_success = @nsc.logout
+      # END of Target Ranges loop
+      if targets_sha2
+         File.open("." + targets_sha2, 'w') {|f| f.write("COMPLETED") }
+      end
+   when 2   # list
+      uputs("SCAN", 'list SCAN action requested')
+      scan_activity = scan_activity()
+      upp scan_activity
+      if scan_activity.length > 0
+          # EJG adding timeDiff conditional action
+          scan_activity.each do |scan_ids, scans|
+             case args.action
+             when "exceeds", "max"
+               if args.filter && args.filter.include?("max_secs")
+                 max_secs = args.filter.split(':').last.to_i
+                 if scans[:timeDiff].to_i >= max_secs 
+                   # puts scans[:timeDiff].to_s + "\n"
+                   puts scan_ids.to_s + "\n"
+                   upp(scans)
+                 end
+               end
+             else
+               puts scans[:act_str].to_s + "\n"
+             end
+          end
+      else
+          puts "There are no scans in queue.\n"
+      end
+   when 4   # show
+      uputs("SCAN", 'show SCAN action requested')
+      if is_numeric(args.id)
+        #scanSummary = Nexpose::DataTable._get_dyn_table(@nsc, "/ajax/scan_statistics.txml?scanid=#{args.id}")
+        #scanDets = Hash.new
+        #scanRuntime = DateTime.now.strftime('%s').to_i - (scanSummary[0]['Started'].to_i / 1000).to_i
+        #scanDets = { "Scan Id" => args.id, "Pending Scans" => scanSummary[0]['Pending Scans'], "Active Scans" => scanSummary[0]['Currently Scanning'], "Scan Run Secs" => scanRuntime }
+        #puts scanDets.to_s + "\n"
+
+        scanSummary = @nsc.scan_statistics(args.id)
+        upp scanSummary
+      else
+        puts 'Not yet implemented'
+      end
+   when 8   # update
+      # EJG
+      uputs("SCAN", 'update SCAN action requested')
+      if args.action
+        case args.action
+        when "stop", "halt"
+          if is_numeric(args.id)
+            uputs("SCAN", "stop SCAN action requested for scan id: #{args.id}")
+            @nsc.stop_scan(args.id, 60)
+          end
+        when "export"
+          if is_numeric(args.id)
+            uputs("SCAN", "export SCAN action requested for scan id: #{args.id}")
+            @nsc.export_scan(args.id, "#{@scanpath.to_s}/scan-#{args.id.to_s}.zip")
+          else
+            uputs("SCAN", "export SCAN action failed for scan id: #{args.id}, expecting scan id")
+          end
+        when "import"
+          if is_numeric(args.id)
+            uputs("SCAN", "import SCAN action requested for site id: #{args.id} and file: #{args.filterv}")
+            @nsc.import_scan(args.id.to_i, @scanpath.to_s + '/' + args.filterv.to_s)
+            # Poll until scan is complete before attempting to import the next scan.
+            upp @nsc.site_scan_history(args.id.to_i) 
+            last_scan = @nsc.site_scan_history(args.id.to_i).max_by { |s| s.start_time }.scan_id 
+            while (@nsc.scan_status(last_scan) == 'running')
+               sleep 10
+            end
+            uputs("SCAN", "import SCAN integration completed for site id: #{args.id} and file: #{args.filterv}")
+          else
+            uputs("SCAN", "import SCAN action failed for site id: #{args.id}, expecting site id")
+          end
+        else
+          puts 'The action requested is not implemented for target'
+        end
+      else
+        puts 'Not yet implemented'
+      end
+   when 16  # delete
+      uputs("ACTION", 'delete SCAN action requested')
+      puts 'Not yet implemented, and not likely to be implemented'
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 16  # TARGET SITE
+   case @action
+   when 1   # create
+      uputs("ACTION", 'create SITE action requested')
+      puts 'Not yet implemented, and not likely to be implemented'
+   when 2   # list
+      uputs("ACTION", 'list SITE action requested')
+      site_listing = @nsc.list_sites
+      site_listing.each do |site|
+        puts("Site: id:#{site.id}\t name:'#{site.name}'\t--description:#{site.description}\n")
+      end
+      upp site_listing
+   when 4   # show
+      uputs("ACTION", 'show SITE action requested')
+      site = ""
+      if (args.id != nil)
+         scan_site_id = args.id.to_i
+      end
+      begin
+         site = Nexpose::Site.load(@nsc, scan_site_id)
+      rescue Nexpose::APIError => e
+         STDERR.puts "ERROR [ " + e.to_s + " ]"
+         exit(-1)
+      end
+      puts("Site: id:#{site.id}\t name:'#{site.name}'\tconfig version:#{site.config_version}\n--description:#{site.description}\n")
+      puts("--scan engine: #{site.engine}\tscan_template: '#{site.scan_template_name}'\n")
+      puts("--assets:")
+      site.assets.each do |iprange|
+         puts("  IPRange from: #{iprange.from} - #{iprange.to}\n")
+      end
+      puts("--exclude:")
+      site.exclude.each do |iprange|
+         puts("  IPRange from: #{iprange.from} - #{iprange.to}\n")
+      end
+      upp site
+   when 8   # update
+      uputs("ACTION", 'update SITE action requested')
+      site = ""
+      if (args.id != nil)
+         scan_site_id = args.id.to_i
+      end
+      begin
+         site = Nexpose::Site.load(@nsc, scan_site_id)
+      rescue Nexpose::APIError => e
+         STDERR.puts "ERROR [ " + e.to_s + " ]"
+         exit(-1)
+      end
+
+      case args.filter
+      when "exclude", "EXCLUDE"
+         if args.action == "replace"
+            site.exclude = []
+         end
+         # parse --filterv for IPRange to replace/add
+         if valid_ipv4_dottedcsv(args.filterv)
+            valid_xrange = args.filterv
+         else
+            puts("ERROR Expecting IPRange in X.X.X.X,Y.Y.Y.Y format: from,to\n")
+            exit(-1)
+         end
+         site.exclude.push(Nexpose::IPRange.new(valid_xrange.split(',').first.to_s, valid_xrange.split(',').last.to_s))
+         site.save(@nsc)
+      else
+        puts 'Not yet implemented'
+      end
+   when 16  # delete
+      uputs("ACTION", 'delete SITE action requested')
+      puts 'Not yet implemented'
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 32  # TARGET ASSET
+   case @action
+   when 1   # create
+      uputs("ACTION", 'create ASSET action requested')
+      puts 'Not yet implemented'
+   when 2   # list
+      uputs("ACTION", 'list ASSET action requested')
+      assetgroups = @nsc.asset_groups
+      uputs("ACTION", "There are #{assetgroups.size} asset groups.")
+      assetgroups.each do |ags|
+         puts "id: #{ags.id.to_s.ljust(10)} name: #{ags.name}"
+      end
+      upp assetgroups
+   when 4   # show
+      uputs("ACTION", 'show ASSET action requested')
+      if is_numeric(args.id)
+         ag = Nexpose::AssetGroup.load(@nsc, args.id)
+         puts "There are #{ag.assets.size} assets in asset group id: #{args.id} name: \"#{ag.name}\".\n"
+         ag.assets.each do |asset|
+            puts "id: #{asset.id.to_s.ljust(10)} address: #{asset.address}"
+         end
+      else
+         puts 'The Asset Group Id must be numeric.'
+      end
+      upp(ag)
+   when 8   # update
+      uputs("ACTION", 'update ASSET action requested')
+      puts 'Not yet implemented'
+   when 16  # delete
+      uputs("ACTION", 'delete ASSET action requested')
+      puts 'Not yet implemented'
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 64  # TARGET REPORT
+   case @action
+   when 1   # create
+      uputs("ACTION", 'create REPORT action requested')
+
+   if (args.id != nil)
+      report_config = Nexpose::ReportConfig.load(@nsc, args.id)
+      report_config.filters.delete_if do |filter|
+         if filter.type == "device"
+           upp filter
+           true
+         end
+      end
+      uputs("DEBUG", 'report_config.filters post device filter deletion')
+      upp(report_config.filters)
+
+      if (args.host != nil)
+         # EJG pass site id through...
+         device = @nsc.find_device_by_address( args.host, args.site)
+         if (device != nil)
+            report_config.id = -1
+            scan_asset_device_id = device.id.to_i
+            report_config.name = "Asset: " + args.host.to_s + " (" + Time.now.strftime("%Y%m%d%H%M%S") + ")"
+            report_config.add_filter('device', scan_asset_device_id)
+            report_config.save(@nsc)
+         else
+            puts "Device Id is nil. No match found for ip: " + args.host.to_s + "\n"
+         end
+      else
+         report_config.name = "Default Report Name (" + Time.now.strftime("%Y%m%d%H%M%S") + ")"
+      end
+      puts "- Running the report now...\n"
+      report_run = report_config.generate(@nsc)
+
+      # check for report run status
+      report_summary = @nsc.last_report(report_config.id)
+      while report_summary.status != "Generated"
+          puts "- Sleeping... " + report_summary.status.to_s + "\n"
+          sleep(2)
+          report_summary = @nsc.last_report(report_config.id)
+      end
+      # pp report_summary
+
+      puts "---\n- Report Id: " + report_config.id.to_s + " \n"
+      puts "---\n- The report can be found via:\n https://#{@nsc_server}:3780" + report_summary.uri.to_s + "\n"
+
+      # download("https://#{@nsc_server}:3780" + report_summary.uri.to_s, "./tmp/RemediationPlan-" + Time.now.strftime("%Y%m%d_%H%M%S") + ".pdf", nsc)
+      download("https://#{@nsc_server}:3780" + report_summary.uri.to_s, "./tmp/doc.pdf", @nsc)
+   end
+
+   when 2   # list
+      uputs("ACTION", 'list REPORT action requested')
+      report_listing = @nsc.list_reports
+      report_listing.each do |report|
+        puts("Report id:#{report.config_id}\ttemplate:#{report.template_id}\tname:#{report.name}\n")
+        upp report
+      end
+   when 4   # show
+      uputs("ACTION", 'show REPORT action requested')
+      report = @nsc.last_report(args.id)
+      upp report
+   when 8   # update
+      uputs("ACTION", 'update REPORT action requested')
+      puts 'Not yet implemented'
+   when 16  # delete
+      uputs("ACTION", 'delete REPORT action requested')
+      puts 'Not yet implemented'
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 128 # TARGET VULN
+   case @action
+   when 1   # create
+      uputs("ACTION", 'create VULN action requested')
+      puts 'Not yet implemented, and not likely to be implemented'
+   when 2   # list
+      uputs("ACTION", 'list VULN action requested')
+      vuln_list = @nsc.all_vulns
+      upp vuln_list
+   when 4   # show
+      uputs("ACTION", 'show VULN action requested')
+      puts 'Not yet implemented'
+   when 8   # update
+      uputs("ACTION", 'update VULN action requested')
+      puts 'Not yet implemented, and not likely to be implemented'
+   when 16  # delete
+      uputs("ACTION", 'delete VULN action requested')
+      puts 'Not yet implemented'
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 256 # TARGET COMMAND
+   case @action
+   when 32  # run
+      uputs("ACTION", 'run COMMAND action requested')
+      puts "\nRunning [#{args.COMMAND}]\n\n"
+      postd = @nsc.console_command(args.COMMAND)
+      puts postd.to_s
+      puts "\n"
+   else
+      uputs("ACTION", 'The action requested is not implemented for target: COMMAND')
+      puts 'The action requested is not implemented for target: COMMAND'
+   end
+when 512  # TARGET DASSET
+   case @action
+   when 1, 8   # create and update
+      valid_filterv = nil
+      base_field_str = "Nexpose::Search::Field::"
+      base_op_str = "Nexpose::Search::Operator::"
+
+      # For now, only support default IP_RANGE defined dynamic asset groups
+      field_str = "IP_RANGE"
+      op_str    = "IN"
+      asset_crit = nil
+
+      # Insert loop for multi/single dyanmic asset group creation
+      # EJG
+      dags_sha2 = false
+      dags_cursor = 0
+      dags = []
+      dag_filtervs = []
+
+      # read all dags into an array, from cli arg or file
+      if args.targets
+         # expecting fields: action,filter,filterv,name,description
+         uputs("DASSET", "Dynamic Asset Groups provided within: #{args.targets} file")
+      end
+
+      # if batch processing, grab @action value from field 1 in the targets file record
+      valid_str = ""
+      if args.filter
+         valid_str = validate_searchstring(args.filter)
+      end 
+      isValid = false
+      if valid_str != "ERROR"
+         isValid = true
+         field_str = valid_str.split(',').first.to_s
+         op_str    = valid_str.split(',').last.to_s
+      else
+      end
+
+      if args.filterv
+         # now test filterv based on filter_str and op_str
+         if field_str == "IP_RANGE"
+            valid_range = '127.0.0.1:127.0.0.1'
+            if valid_ipv4(args.filterv)
+              valid_range = ip2rangev4(args.filterv)
+            elsif valid_cidrv4(args.filterv)
+              valid_range = cidr2rangev4(args.filterv)
+            elsif valid_ipv4_dottedcsv(args.filterv)
+              # add dotted csv validation for low,high order
+              valid_range = args.filterv
+            elsif valid_ipv4_dottedcolon(args.filterv)
+              # add dotted colon validation for low,high order
+              valid_range = args.filterv
+            elsif valid_ipv4_dotteddashed(args.filterv)
+              valid_range = dotteddashed2rangev4(args.filterv)
+            elsif valid_ipv4_dotteddashedshort(args.filterv)
+              valid_range = dotteddashedshort2rangev4(args.filterv)
+            else
+              uputs("DASSET", "API ERROR: An invalid asset group range was provided: #{args.filterv.to_s}")
+            end
+            # to allow target file csv format, expect : delimited range or replace "," with ":" here.
+            vrange = valid_range.dup
+            vrange.tr!(",",":")
+
+            valid_filterv = [vrange.split(':').first.to_s, vrange.split(':').last.to_s]
+         elsif field_str == "CVSS_SCORE"
+            # test for float, and possibly IN_RANGE op
+            valid_filterv = [7.0]
+         elsif field_str == "RISK_SCORE" || field_str == "SITE_ID"
+            # test for fixnum, and possibly IN_RANGE op
+            valid_filterv = [args.filterv.to_i]
+         elsif field_str == "OS"
+            # test for str
+            valid_filterv = [args.filterv.to_s]
+         else
+            # assume fixnum, with exception of IN_RANGE op
+            valid_filterv = ["ERROR"]
+         end
+         uputs("DASSET", "The filterv value passed: #{args.filterv} vs the validated value: #{valid_filterv.to_s}")
+      else
+      end
+
+      if isValid
+         asset_crit = Nexpose::Criterion.new(Object.const_get(base_field_str + field_str), Object.const_get(base_op_str + op_str), valid_filterv)
+
+         # DynamicAsset Group Name and Description, consider adding type validation and MAX length
+         dag_name = 'api.test'
+         if args.name
+            dag_name = args.name.to_s
+         end
+         dag_descr = 'This DynamicAssetGroup has been defined programmatically via API and automation script.'
+         if args.description
+            dag_descr = args.description.to_s
+         end
+
+         # new or load, based on create vs update
+         if @action == 1
+            uputs("ACTION", 'create DASSET action requested')
+            criteria = Nexpose::Criteria.new(asset_crit)
+            dag = Nexpose::DynamicAssetGroup.new(dag_name, criteria, dag_descr)
+         else
+            uputs("ACTION", 'update DASSET action requested')
+            dag = Nexpose::DynamicAssetGroup.load(@nsc, args.id.to_i)
+            dag.criteria.criteria << asset_crit
+         end
+         uputs("DASSET", "Attempting save the DynamicAssetGroup: #{@dag_name.to_s}")
+         begin
+            if dag.save(@nsc)
+               uputs("DASSET", "Testing")
+               upp dag
+               uputs("DASSET", "Testing - End")
+               puts "Dynamic Asset Group was successfully created/updated - id: #{dag.id.to_s.ljust(10)} name: \"#{dag.name.to_s}\""
+            else
+               puts "Dynamic Asset Group create/update failed - name: \"#{dag.name.to_s}\""
+            end
+         rescue Nexpose::APIError => e
+            uputs("DASSET", "An error occurred while attempting to save the DynamicAssetGroup: #{e.to_s}")
+            STDERR.puts "ERROR [ " + e.to_s + " ]"
+         end
+         upp dag
+
+         # End of DAG list loop
+      else
+         puts "ERROR: DynamicAssetGroup filter: #{args.filter} is invalid or unsupported."
+      end
+   when 2   # list
+      uputs("ACTION", 'list DASSET action requested')
+      assetgroups = @nsc.asset_groups
+      uputs("ACTION", "There are #{assetgroups.size} asset groups.")
+      assetgroups.each do |ags|
+         if ags.dynamic
+            agsnamepattern = ".*"
+            if args.filter && args.filterv
+               agsnamepattern = args.filterv
+            end
+            if /#{agsnamepattern}/.match(ags.name)
+               puts "id: #{ags.id.to_s.ljust(10)} name: #{ags.name}"
+            end
+         end
+      end
+      upp assetgroups
+   when 4   # show
+      uputs("ACTION", 'show DASSET action requested')
+      if is_numeric(args.id)
+         dag = Nexpose::DynamicAssetGroup.load(@nsc, args.id)
+         puts "Dynamic Asset Group id: #{dag.id.to_s.ljust(10)} name: \"#{dag.name.to_s}\""
+         puts "- description: #{dag.description.to_s}"
+         puts "- is defined by the following criteria:"
+         dag.criteria.criteria.each do |criterion|
+            puts "\t field: #{criterion.field.to_s.ljust(20)} operator: #{criterion.operator.to_s.ljust(15)} value: #{criterion.value}"
+         end
+         upp dag
+      else
+         puts 'The Dynamic Asset Group Id must be numeric.'
+      end
+      upp(dag)
+   when 32   # original update
+      uputs("ACTION", 'update DASSET action requested')
+      if is_numeric(args.id)
+         if args.action
+            dag = Nexpose::DynamicAssetGroup.load(@nsc, args.id.to_i)
+
+            # actions = name, add criteria, match, flush and replace criteria, consider help to display valid search criteria
+            # filter = Field, Operator, Value
+            case args.action
+            when "name"
+               dag.name = args.filter.to_s
+            when "append" # append new criteria
+               field_str = "Nexpose::Search::Field::IP_RANGE"
+               asset_crit = Nexpose::Criterion.new(Object.const_get(field_str), Nexpose::Search::Operator::IN, ["10.249.20.0", "10.249.20.255"])
+               dag.criteria.criteria << asset_crit
+            when "replace" # replace criteria
+               dag.criteria.criteria.clear
+               field_str = "Nexpose::Search::Field::OS"
+               asset_crit = Nexpose::Criterion.new(Object.const_get(field_str), Nexpose::Search::Operator::CONTAINS, 'windows')
+               dag.criteria.criteria << asset_crit
+            else
+               puts 'The action requested is not implemented for target'
+            end
+         else
+            puts "No update action was specified."
+         end
+
+         if dag.save(@nsc)
+            puts "Dynamic Asset Group was successfully updated - id: #{dag.id.to_s.ljust(10)} name: \"#{dag.name.to_s}\""
+         else
+            puts "Dynamic Asset Group update failed - id: #{dag.id.to_s.ljust(10)} name: \"#{dag.name.to_s}\""
+         end
+      else
+         puts 'The Dynamic Asset Group Id must be numeric.'
+      end
+   when 16  # delete
+      # EJG
+      uputs("ACTION", 'delete DASSET action requested')
+      @nsc.delete_asset_group(args.id.to_i)
+      puts "DASSET id #{args.id.to_s} has been deleted."
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 1024  # TARGET TAG
+   case @action
+   when 1, 8   # create and update
+      valid_filterv = nil
+      base_field_str = "Nexpose::Search::Field::"
+      base_op_str = "Nexpose::Search::Operator::"
+
+      # For now, only support default IP_RANGE defined tags
+      field_str = "IP_RANGE"
+      op_str    = "IN"
+      asset_crit = nil
+
+      # Insert loop for multi/single tag creation
+      # EJG
+      tags_sha2 = false
+      tags_cursor = 0
+      tags = []
+      tag_filtervs = []
+
+      # read all tags into an array, from cli arg or file
+      if args.targets
+         # expecting fields: action,filter,filterv,name,description
+         uputs("TAG", "Tags provided within: #{args.targets} file")
+      end
+
+      # if batch processing, grab @action value from field 1 in the targets file record
+      valid_str = ""
+      if args.filter
+         valid_str = validate_searchstring(args.filter)
+      end 
+      isValid = false
+      if valid_str != "ERROR"
+         isValid = true
+         field_str = valid_str.split(',').first.to_s
+         op_str    = valid_str.split(',').last.to_s
+      else
+      end
+
+      if args.filterv
+         # now test filterv based on filter_str and op_str
+         if field_str == "IP_RANGE"
+            valid_range = '127.0.0.1:127.0.0.1'
+            if valid_ipv4(args.filterv)
+              valid_range = ip2rangev4(args.filterv)
+            elsif valid_cidrv4(args.filterv)
+              valid_range = cidr2rangev4(args.filterv)
+            elsif valid_ipv4_dottedcsv(args.filterv)
+              # add dotted csv validation for low,high order
+              valid_range = args.filterv
+            elsif valid_ipv4_dottedcolon(args.filterv)
+              # add dotted colon validation for low,high order
+              valid_range = args.filterv
+            elsif valid_ipv4_dotteddashed(args.filterv)
+              valid_range = dotteddashed2rangev4(args.filterv)
+            elsif valid_ipv4_dotteddashedshort(args.filterv)
+              valid_range = dotteddashedshort2rangev4(args.filterv)
+            else
+              uputs("TAG", "API ERROR: An invalid tag range was provided: #{args.filterv.to_s}")
+            end
+            # to allow target file csv format, expect : delimited range or replace "," with ":" here.
+            vrange = valid_range.dup
+            vrange.tr!(",",":")
+
+            valid_filterv = [vrange.split(':').first.to_s, vrange.split(':').last.to_s]
+         elsif field_str == "CVSS_SCORE"
+            # test for float, and possibly IN_RANGE op
+            valid_filterv = [7.0]
+         elsif field_str == "RISK_SCORE" || field_str == "SITE_ID"
+            # test for fixnum, and possibly IN_RANGE op
+            valid_filterv = [args.filterv.to_i]
+         elsif field_str == "OS"
+            # test for str
+            valid_filterv = [args.filterv.to_s]
+         else
+            # assume fixnum, with exception of IN_RANGE op
+            valid_filterv = ["ERROR"]
+         end
+         uputs("TAG", "The filterv value passed: #{args.filterv} vs the validated value: #{valid_filterv.to_s}")
+      else
+      end
+
+      if isValid
+         asset_crit = Nexpose::Tag::Criterion.new(Object.const_get(base_field_str + field_str), Object.const_get(base_op_str + op_str), valid_filterv)
+
+         # Tag Name and Description, consider adding type validation and MAX length
+         tag_name = 'api.test'
+         if args.name
+            tag_name = args.name.to_s
+         end
+
+         # new or load, based on create vs update
+         if @action == 1
+            uputs("ACTION", 'create TAG action requested')
+            criteria = Nexpose::Tag::Criteria.new(asset_crit)
+            tag = Nexpose::Tag.new(tag_name, Nexpose::Tag::Type::Generic::CUSTOM)
+            tag.color = "#de7200"
+            tag.search_criteria = criteria
+         else
+            uputs("ACTION", 'update TAG action requested')
+            tag = Nexpose::Tag.load(@nsc, args.id.to_i)
+            tag.search_criteria << asset_crit
+         end
+         uputs("TAG", "Attempting save the Tag: #{@tag_name.to_s}")
+         begin
+            if tag.save(@nsc)
+               puts "Tag was successfully created/updated - id: #{tag.id.to_s.ljust(10)} name: \"#{tag.name.to_s}\""
+            else
+               puts "Tag create/update failed - name: \"#{tag.name.to_s}\""
+            end
+         rescue Nexpose::APIError => e
+            uputs("TAG", "An error occurred while attempting to save the Tag: #{e.to_s}")
+            STDERR.puts "ERROR [ " + e.to_s + " ]"
+         end
+         upp tag
+
+         # End of TAG list loop
+      else
+         puts "ERROR: Tag filter: #{args.filter} is invalid or unsupported."
+      end
+   when 2   # list
+      uputs("ACTION", 'list TAG action requested')
+      tags = @nsc.tags
+      uputs("ACTION", "There are #{tags.size} asset tags.")
+      tagsnamepattern = ".*"
+      if args.filter && args.filterv
+         tagsnamepattern = args.filterv
+      end
+      tags.each do |tag|
+         if /#{tagsnamepattern}/.match(tag.name)
+            puts "id: #{tag.id.to_s.ljust(10)} name: #{tag.name}"
+         end
+      end
+      upp tags
+   when 4   # show
+      if args.id
+         tag = Nexpose::Tag.load(@nsc, args.id)
+         upp tag
+      end
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 2048 # TARGET CONSOLE
+   case @action
+   when 32   # run
+      if args.action
+        case args.action
+        when "backup"
+          backupdescr = 'Nexpose Console Backup via automation.'
+          if args.description
+             backupdescr = args.description.to_s
+          end
+          active_scans = @nsc.scan_activity
+
+          # attempt to start the backup
+          if active_scans.empty?
+             platform_independent = true
+             @nsc.backup(platform_independent, backupdescr)
+             puts 'The backup job requested has been submitted and will run shortly.'
+             uputs("BACKUP", 'The backup requested is running')
+          else
+             puts 'There are active scans, please run the backup once the scans have completed.'
+             uputs("BACKUP", 'The backup requested can not be run at this time, there are active scans')
+          end 
+        else
+           puts 'The action requested is not implemented for target'
+        end
+      else
+         puts 'No CONSOLE action was passed'
+      end
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 8192 # TARGET ROLE
+   case @action
+   when 1  # create, via copy for now
+      rolename = args.name
+      newrole = Nexpose::Role.copy(@nsc, rolename, 'global' ) 
+      newrole.name = args.newname.to_str
+      newrole.full_name = "#{args.description.to_str}"
+      newrole.save(@nsc)
+      upp newrole
+      puts "\n"
+   when 2  # list
+      uputs("ACTION", 'list ROLE action requested')
+      postd = @nsc.roles
+      upp postd
+      puts "\n"
+   when 4 # show
+      rolename = args.name
+      role = Nexpose::Role.load(@nsc, rolename, 'global' ) 
+      upp role
+      puts "\n"
+   when 16 # delete
+      rolename = args.name
+      role = Nexpose::Role.load(@nsc, rolename, 'global' ) 
+      role.delete(@nsc)
+      tryrole = Nexpose::Role.load(@nsc, rolename, 'global' ) 
+      upp tryrole
+      puts "\n"
+   else
+      uputs("ACTION", 'The action requested is not implemented for target: ROLE')
+      puts 'The action requested is not implemented for target: ROLE'
+   end
+else
+   # there is no default target
+   uputs("ACTION", 'No default action requested')
+   raise 'No action target was provided, see --help'
+end
+
+# logout and close the connection
+uputs("COMMAND", 'The task requested has been completed, closing the NSC connection')
+begin
+   logout_success = @nsc.logout
+rescue Nexpose::APIError => e
+   STDERR.puts "ERROR [ " + e.to_s + " ]"
+   uputs("CONNECT", "The NSC connection has already been closed, goodbye")
+   exit(0)
+end
+uputs("CONNECT", "The NSC connection is closed, goodbye")
+##############################################################################
+# end 
