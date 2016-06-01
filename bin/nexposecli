@@ -15,6 +15,9 @@
 #
 #   -v		verbose
 #   --help	help
+#  ***NOTE*** This script is being refactored!!!
+#  It is currently a shameless copy of my UF code and 
+#  argparse.rb class code from Jim Hranicky (jfh@ufl.edu)
 #
 ##############################################################################
 require 'rubygems'
