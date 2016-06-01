@@ -18,7 +18,7 @@ or an example of running a query to list all active scans
 
 how to run an adhoc sql query and export via csv
 
-    nexposecli --run --QUERY --config ./lab.yaml --logpath --sql "select * from dim_asset"
+    nexposecli --run --QUERY --config ./lab.yaml --sql "select * from dim_asset"
 
 or for more complex sql queries, put the sql into a file and run
 
