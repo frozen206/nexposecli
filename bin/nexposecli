@@ -360,6 +360,9 @@ ARGS = %q{
     desc                  : The COMMAND target is only used in conjunction with the --run action
     required              : true
 
+  - name                  : QUERY
+    desc                  : The QUERY target is only used in conjunction with the --run action
+
   - comment               : EVM Action Argument Values
 
   - name                  : host
@@ -425,6 +428,14 @@ ARGS = %q{
   - name                  : action
     short                 : a
     desc                  : The subaction to be performed within the target action
+    required              : true
+
+  - name                  : sql
+    desc                  : The sql query to be executed
+    required              : true
+
+  - name                  : sqlfile
+    desc                  : The file containing the sql query to be executed
     required              : true
 
   - name                  : attempts
@@ -532,8 +543,9 @@ uputs("TARGET", "Checking for the requested target")
 @target |= 2048  if args.CONSOLE
 @target |= 4096  if args.TEMPLATE
 @target |= 8192  if args.ROLE
+@target |= 16384  if args.QUERY
 uputs("TARGET", "The requested target value is: #{@target.to_s}")
-raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192].include?(@target)
+raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384].include?(@target)
 
 # nsc conn vars
 unless (
@@ -1702,6 +1714,38 @@ when 8192 # TARGET ROLE
    else
       uputs("ACTION", 'The action requested is not implemented for target: ROLE')
       puts 'The action requested is not implemented for target: ROLE'
+   end
+when 16384 # TARGET QUERY
+   case @action
+   when 32  # run
+      uputs("ACTION", 'run QUERY action requested')
+
+      # Read desired sql from cli arg or file, with preference to sql arg
+      sql = ""
+      # EJGNOW
+      if args.sql 
+         sql = args.sql
+      elsif args.sqlfile
+         if File.file?(args.sqlfile)
+            sql = File.read(args.sqlfile)
+         end
+      else
+         STDERR.puts "ERROR [ sql query is empty ]"
+         exit(-1)
+      end
+      uputs("QUERY", "\nRunning [#{sql}]")
+
+      sql_config = Nexpose::AdhocReportConfig.new(nil, 'sql')
+      sql_config.add_filter('version', '2.0.1')
+      sql_config.add_filter('query', sql)
+
+      sql_output = sql_config.generate(@nsc)
+      csv_output = CSV.parse(sql_output.chomp, { :headers => :first_row})
+
+      puts csv_output
+   else
+      uputs("ACTION", 'The action requested is not implemented for target: COMMAND')
+      puts 'The action requested is not implemented for target: COMMAND'
    end
 else
    # there is no default target
