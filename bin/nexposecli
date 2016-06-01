@@ -500,7 +500,7 @@ uputs("CLI", "Args: #{args.inspect}")
 
 if args.help
   uputs("CLI", "Help was requested, displaying usage and exiting")
-  puts ap.usage("#{$0} [options]")
+  puts ap.usage("#{$0} [options] (v #{Nexposecli::VERSION})")
   exit(0)
 end
 
