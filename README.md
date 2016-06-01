@@ -16,6 +16,30 @@ or an example of running a query to list all active scans
 
     nexposecli --config ./lab.yaml --list --SCAN
 
+how to list all reports defined
+
+    nexposecli --config ./lab.yaml --list --REPORT
+
+how to request the console's version details
+
+    nexposecli --config ./lab.yaml --run --COMMAND "ver"
+
+how to run an adhoc scan for a single ip or network cidr-noted range ( --id <site id> )
+
+    nexposecli --config ./lab.yaml --create --SCAN --id 1 --range 192.168.42.103/32
+
+how to add a new custom role for configuration within the console ui, based on a copy of existing role
+
+    nexposecli --config ./lab.yaml --create --ROLE -n security-manager --description "New Role Name" --newname new-short-name
+
+how to add a new user, with default password of "nxpassword" until moved to yaml config is supported
+
+    nexposecli  --config ./lab.yaml --create --USER --name <username> --fullname "Full Name"
+
+how to export packaged scan data in a single zip file
+
+    nexposecli --config ./lab.yaml --SCAN --update --scanpath ./ --action export --id <scan id>
+
 where ./lab.yaml consists of the following:
 
     config:
