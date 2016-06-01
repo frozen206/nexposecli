@@ -10,6 +10,7 @@ Gem::Specification.new do |spec|
   spec.summary       = 'Ruby command-line utility for Rapid7 Nexpose'
   spec.description   = 'This experimental gem provides a Ruby command-line utility to the Nexpose vulnerability management product by Rapid7.'
   spec.homepage      = 'https://github.com/frozenr7/nexposecli'
+  spec.license       = 'BSD'
 
   spec.files         = `git ls-files`.split($\)
   spec.test_files    = spec.files.grep(%r{^(test|spec|features)/})
