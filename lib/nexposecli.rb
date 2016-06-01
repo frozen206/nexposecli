@@ -1,4 +1,5 @@
 require "nexposecli/version"
+require "nexposecli/argparse"
 
 module Nexposecli
   class Chatter
