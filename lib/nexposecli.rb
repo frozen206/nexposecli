@@ -1,5 +1,9 @@
 require "nexposecli/version"
 
 module Nexposecli
-  # Your code goes here...
+  class Chatter
+    def say_hello
+      puts 'This is nexposecli. Coming Soon.'
+    end
+  end
 end
