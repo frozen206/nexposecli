@@ -23,6 +23,8 @@ how to run an adhoc sql query and export via csv
 or for more complex sql queries, put the sql into a file and run
 
     nexposecli --run --QUERY --config ./lab.yaml --sqlfile ./new_assets.sql
+NOTE: Consider reviewing the SQL examples and reports available here:
+https://community.rapid7.com/community/nexpose/report-templates
 
 how to list all reports defined
 

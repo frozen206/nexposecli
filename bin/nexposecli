@@ -434,8 +434,16 @@ ARGS = %q{
     desc                  : The sql query to be executed
     required              : true
 
+  - name                  : sqlvar
+    desc                  : The sql query to be executed
+    required              : true
+
   - name                  : sqlfile
     desc                  : The file containing the sql query to be executed
+    required              : true
+
+  - name                  : timeout
+    desc                  : The timeout value in seconds for certain actions, such as reporting
     required              : true
 
   - name                  : attempts
@@ -1733,13 +1741,23 @@ when 16384 # TARGET QUERY
          STDERR.puts "ERROR [ sql query is empty ]"
          exit(-1)
       end
+
+      if args.sqlvar
+         sql = sql.gsub("R7SQLVAR", args.sqlvar)
+      end
       uputs("QUERY", "\nRunning [#{sql}]")
 
       sql_config = Nexpose::AdhocReportConfig.new(nil, 'sql')
       sql_config.add_filter('version', '2.0.1')
       sql_config.add_filter('query', sql)
 
-      sql_output = sql_config.generate(@nsc)
+      if args.timeout
+         rpt_to = args.timeout.to_int
+      else
+         rpt_to = 600
+      end
+
+      sql_output = sql_config.generate(@nsc, rpt_to)
       csv_output = CSV.parse(sql_output.chomp, { :headers => :first_row})
 
       puts csv_output
