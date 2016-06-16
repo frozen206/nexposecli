@@ -59,10 +59,7 @@ where ./lab.yaml consists of the following:
 
 NOTE: Be sure to use your Nexpose Console's ip address and credentials
 
-TODO: Write more detailed usage instructions here
-
 Known Issues:
-* Currently expects a ./logs directory in working directory
 * A number of the target objects may not return anything to STDOUT without a -v
 
 ## Contributing
