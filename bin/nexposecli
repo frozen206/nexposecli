@@ -1,20 +1,18 @@
 #!/usr/bin/env ruby
 ##############################################################################
 #
-# File:    	evm.rb
+# File:    	nexposecli
 #
 # Author:  	Erik Gomez <gomeze@pobox.com>
 # 		Erik Gomez <erik_gomez@rapid7.com>
 #
-# Purpose: 	UF ISC EVM Administrative tasks via cli 
+# Purpose: 	A command-line utility for the Rapid7 Nexpose Console 
 #
-# Base Revision:	$Id:$ (20141030@1227.01)
-# Revision:	$Id:$ (20160426@1315.01)
-#
-#   Usage: ./evm.rb <action> <target> [<args>] 
+#   Usage: nexposecli <action> <target> [<args>] 
 #
 #   -v		verbose
 #   --help	help
+#
 #  ***NOTE*** This script is being refactored!!!
 #  It is currently a shameless copy of my UF code and 
 #  argparse.rb class code from Jim Hranicky (jfh@ufl.edu)
@@ -30,29 +28,18 @@ require 'netaddr'
 require 'logger'
 require 'yaml'
 require 'csv'
-require 'set'
 # for debug, this dumps the ruby objects to STDOUT
 require 'pp'
 
 ##############################################################################
-# Set Const
-
-# Allowed Ops by field, in Set form
-CVSS_SCORE_OPS = Set["IS", "IS_NOT", "IN_RANGE", "GREATER_THAN", "LESS_THAN"]
-IP_RANGE_OPS   = Set["IN", "NOT_IN"]
-OS_OPS         = Set["CONTAINS", "NOT_CONTAINS", "IS_EMPTY", "IS_NOT_EMPTY"]
-RISK_SCORE_OPS = Set["IS", "IS_NOT", "IN_RANGE", "GREATER_THAN", "LESS_THAN"]
-SITE_ID_OPS    = Set["IN", "NOT_IN"]
-SCAN_DATE_OPS  = Set["ON_OR_BEFORE", "ON_OR_AFTER", "BETWEEN", "EARLIER_THAN", "WITHIN_THE_LAST"]
-
 # Set default var values
 $debug = false
 uf_scanners = ''
 
-@logpath = "./logs/"
+@logpath = "./"
 @scanpath = "./"
 # Attempting to use logfile per month: @logfile = "evm" + Time.now.strftime("%Y%m%d_%H%M%S") + ".log"
-@logfile = "evm" + Time.now.strftime("%Y%m") + ".log"
+@logfile = "nexposecli" + Time.now.strftime("%Y%m") + ".log"
 @evm_reqid = SecureRandom.hex
 @nsc_server = "<server>" 
 @nsc_user   = "<user>"
@@ -80,7 +67,7 @@ def upp( uobj )
   end
 end
 
-# UF bail vs exit
+# bail vs exit
 def ubail(retval, msg)
   uputs("BAIL", msg.to_s)
   exit(retval)
@@ -225,14 +212,7 @@ def validate_searchstring(sfstr)
   valid_search_field = nil
   valid_search_op    = nil
 
-  # Valid search fields and operators:
-  # CVSS_SCORE = IS, IS_NOT, IN_RANGE, GREATER_THAN, LESS_THAN (Float 0.0-10.0)
-  # IP_RANGE   = IN, NOT_IN (IPv4 dotted notation)
-  # OS         = CONTAINS, NOT_CONTAINS, IS_EMPTY, IS_NOT_EMPTY
-  # RISK_SCORE = IS, IS_NOT, IN_RANGE, GREATER_THAN, LESS_THAN (Fixnum)
-  # SITE_ID    = IN, NOT_IN (Fixnum)
-  # SCAN_DATE  = ON_OR_BEFORE, ON_OR_AFTER, BETWEEN (Value::ScanDate::FORMAT dates)
-  # SCAN_DATE  = EARLIER_THAN, WITHIN_THE_LAST (Fixnum days)
+  # Valid search fields and operators can be found in lib/nexposecli/ops.rb
 
   # Grab search field and op
   search_field = sfstr.split(':').first.to_s
@@ -242,17 +222,17 @@ def validate_searchstring(sfstr)
   isValid = false
   case search_field
   when "CVSS_SCORE"
-     isValid = true if CVSS_SCORE_OPS.include?(search_op)
+     isValid = true if Nexposecli::CVSS_SCORE_OPS.include?(search_op)
   when "IP_RANGE"
-     isValid = true if IP_RANGE_OPS.include?(search_op)
+     isValid = true if Nexposecli::IP_RANGE_OPS.include?(search_op)
   when "OS"
-     isValid = true if OS_OPS.include?(search_op)
+     isValid = true if Nexposecli::OS_OPS.include?(search_op)
   when "RISK_SCORE"
-     isValid = true if RISK_SCORE_OPS.include?(search_op)
+     isValid = true if Nexposecli::RISK_SCORE_OPS.include?(search_op)
   when "SITE_ID"
-     isValid = true if SITE_ID_OPS.include?(search_op)
+     isValid = true if Nexposecli::SITE_ID_OPS.include?(search_op)
   when "SCAN_DATE"
-     isValid = true if SCAN_DATE_OPS.include?(search_op)
+     isValid = true if Nexposecli::SCAN_DATE_OPS.include?(search_op)
   else
      # Unsupported search field
   end
@@ -267,228 +247,11 @@ end
 
 ##############################################################################
 #
-# Conf
-#
-##############################################################################
-# Parse cli and config options passed
-ARGS = %q{ 
-  - comment               : General Options
-
-  - name                  : help
-    desc                  : Print help
-
-  - name                  : verbose
-    short                 : v
-    desc                  : Run verbosely
-
-  - comment               : EVM Administrative Actions
-
-  - name                  : create
-    short                 : c
-    desc                  : The create action is used for new objects
-
-  - name                  : list
-    short                 : l
-    desc                  : The list action is used to list of objects of the same type
-
-  - name                  : show
-    short                 : s
-    desc                  : The show action is used to display details of a single object
-
-  - name                  : update
-    short                 : u
-    desc                  : The update action is used to change properties of a single object
-
-  - name                  : delete
-    short                 : d
-    desc                  : The delete action is used to delete a single object
-
-  - name                  : run
-    desc                  : The run action is only used to issue commands to the COMMAND object
-
-  - comment               : EVM Action Targets
-
-  - name                  : USER
-    short                 : U
-    desc                  : The USER target is used to alter or create the USER object
-
-  - name                  : ROLE
-    short                 : L
-    desc                  : The ROLE target is used to alter or create the ROLE object
-
-  - name                  : ENGINE
-    short                 : E
-    desc                  : The ENGINE target is used to alter or create the SCAN ENGINE object
-
-  - name                  : POOL
-    short                 : P
-    desc                  : The POOL target is used to alter or create the POOL object
-
-  - name                  : SCAN
-    short                 : S
-    desc                  : The SCAN target is used to alter or create the SCAN object
-
-  - name                  : SITE
-    short                 : T
-    desc                  : The SITE target is used to alter or create the SITE object
-
-  - name                  : ASSET
-    short                 : A
-    desc                  : The ASSET target is used to alter or create the ASSET object
-
-  - name                  : DASSET
-    short                 : D
-    desc                  : The DASSET target is used to alter or create the DASSET object
-
-  - name                  : TAG
-    short                 : G
-    desc                  : The TAG target is used to alter or create the TAG object
-
-  - name                  : REPORT
-    short                 : R
-    desc                  : The REPORT target is used to alter or create the REPORT object
-
-  - name                  : VULN
-    short                 : V
-    desc                  : The VULN target is used to alter or create the VULN object
-
-  - name                  : CONSOLE
-    desc                  : The CONSOLE target is used to alter the CONSOLE nsc connection object
-
-  - name                  : COMMAND
-    short                 : C
-    desc                  : The COMMAND target is only used in conjunction with the --run action
-    required              : true
-
-  - name                  : QUERY
-    desc                  : The QUERY target is only used in conjunction with the --run action
-
-  - comment               : EVM Action Argument Values
-
-  - name                  : host
-    short                 : h
-    desc                  : The target ip or host to be acted upon by the action
-    required              : true
-
-  - name                  : port
-    short                 : p
-    desc                  : The target port to be acted upon by the action
-    required              : true
-
-  - name                  : name
-    short                 : n
-    desc                  : The target object name
-    required              : true
-
-  - name                  : fullname
-    desc                  : The target object full name
-    required              : true
-
-  - name                  : newname
-    desc                  : The target object new name
-    required              : true
-
-  - name                  : description
-    short                 : t
-    desc                  : The text based description of the object being acted upon
-    required              : true
-
-  - name                  : id
-    short                 : i
-    desc                  : The object id being acted upon
-    required              : true
-
-  - name                  : site
-    desc                  : The site id of the object being acted upon
-    required              : true
-
-  - name                  : range
-    short                 : r
-    desc                  : The comma separated (begin,end) range of ip addresses to be acted upon
-    required              : true
-
-  - name                  : targets
-    desc                  : The network block or ip addresses to be acted upon, in CIDRv4, dotted dashed, or ip format
-    required              : true
-
-  - name                  : argv
-    short                 : g
-    desc                  : Argument vector for the action, in the form key:value pairs
-    required              : true
-
-  - name                  : filter
-    short                 : f
-    desc                  : Filters which are applied to the action, in the form key:value pairs
-    required              : true
-
-  - name                  : filterv
-    desc                  : Filter value which are applied to the action. Formate varies by filter type
-    required              : true
-
-  - name                  : action
-    short                 : a
-    desc                  : The subaction to be performed within the target action
-    required              : true
-
-  - name                  : sql
-    desc                  : The sql query to be executed
-    required              : true
-
-  - name                  : sqlvar
-    desc                  : The sql query to be executed
-    required              : true
-
-  - name                  : sqlfile
-    desc                  : The file containing the sql query to be executed
-    required              : true
-
-  - name                  : timeout
-    desc                  : The timeout value in seconds for certain actions, such as reporting
-    required              : true
-
-  - name                  : attempts
-    desc                  : The max number of attempts for iterative actions
-    required              : true
-
-  - name                  : loop_sleep
-    desc                  : The sleep interval in seconds between action iterations
-    required              : true
-
-  - comment               : Nexpose Console credentials
-
-  - name                  : config
-    desc                  : The config yaml file containing the connection details of the Nexpose Console Server
-    required              : true
-
-  - name                  : nsc_server
-    desc                  : The ip or hostname of the Nexpose Console Server
-    required              : true
-
-  - name                  : nsc_user
-    desc                  : The username to login to the Nexpose Console Server
-    required              : true
-
-  - name                  : nsc_pass
-    desc                  : The password to login to the Nexpose Console Server
-    required              : true
-
-  - name                  : logpath
-    desc                  : The path for writing the logs
-    required              : true
-
-  - name                  : scanpath
-    desc                  : The path for exported/imported scans
-    required              : true
-}
-
-
-##############################################################################
-#
 # Main
 #
 ##############################################################################
 # Args parsing
-ap = Nexposecli::ArgParse.new( ARGS )
+ap = Nexposecli::ArgParse.new( Nexposecli::ARGS )
 
 begin
   args = ap.parse
@@ -508,6 +271,7 @@ end
 uputs("LOG", "Automation tasks being run from: " + Socket.gethostname.to_s)
 uputs("LOG", "Automation tasks being logged to: #{@logpath.to_s + @logfile.to_s}")
 
+# Needs to move
 if args.scanpath
   # consider input validation, to avoid sec issues
   @scanpath = args.scanpath.to_s
@@ -517,6 +281,7 @@ $debug = TRUE if args.verbose
 uputs("CLI", "Command-line args parsed for #{$0}")
 uputs("CLI", "Args: #{args.inspect}")
 
+# Needs to potentially move, based on TARGET help vs general usage
 if args.help
   uputs("CLI", "Help was requested, displaying usage and exiting")
   puts ap.usage("#{$0} [options] (v #{Nexposecli::VERSION})")
@@ -552,9 +317,12 @@ uputs("TARGET", "Checking for the requested target")
 @target |= 4096  if args.TEMPLATE
 @target |= 8192  if args.ROLE
 @target |= 16384  if args.QUERY
+@target |= 32768  if args.AUTHSRC
 uputs("TARGET", "The requested target value is: #{@target.to_s}")
-raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384].include?(@target)
+raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768].include?(@target)
 
+# Needs to potentially move into TARGET object or module instance var
+## First NSC Connection and Session creation
 # nsc conn vars
 unless (
   (args.nsc_server && args.nsc_user && args.nsc_pass) || args.config
@@ -609,26 +377,38 @@ when 1   # TARGET USER
     uputs("ACTION", 'create USER action requested')
     name = args.name
     full_name = "#{args.fullname}"
-    password = "nxpassword"
+    email = "#{args.email}"
+    role = "#{args.role}"
+    password = "#{args.password}"
 
     user = Nexpose::User.new(name,
                              full_name, 
                              password, 
-                             role_name = 'user', 
+                             role_name = role,
                              id = -1, 
                              enabled = 1, 
-                             email = nil, 
+                             email = email, 
                              all_sites = false, 
                              all_groups = false, 
                              token = nil)
-    pp user
-    puts 'Not yet saved'
+    if args.authsrc
+       user.authsrcid = args.authsrc
+       user.password = nil
+    end
     user.save(@nsc)
-    pp user
+    puts "The user: #{user.name} was created with id: #{user.id}"
+    uputs("USER", "New user created: #{user.name} (id:#{user.id})")
+    upp user
   when 2   # list
     uputs("ACTION", 'list USER action requested')
     user_listing = @nsc.list_users
-    pp user_listing
+    puts "Users:"
+    puts " -  " + '%-6.6s' % 'Admin?' + " " + '%-15.15s' % 'Username' + " " + '%-25.25s' % 'Full Name' + " " + '%-30.30s' % 'Email' + " " + '%-25.25s' % "Role" + "\tAuth Module:Source"
+    user_listing.each do |user|
+       role = Nexpose::User.load(@nsc, user.id).role_name
+       puts " -  " + '%-6.6s' % user.is_admin.to_s + " " + '%-15.15s' % user.name + " " + '%-25.25s' % user.full_name + " " + '%-30.30s' % user.email + " " + '%-25.25s' % role + "\t#{user.auth_module}:#{user.auth_source}"
+    end
+    upp user_listing
   when 4   # show
     uputs("ACTION", 'show USER action requested')
     userid = args.id.to_str
@@ -1705,6 +1485,11 @@ when 8192 # TARGET ROLE
    when 2  # list
       uputs("ACTION", 'list ROLE action requested')
       postd = @nsc.roles
+      puts "Roles:"
+      puts " -  " + '%-6.6s' % 'Scope' + " " + '%-5.5s' % 'Id' + " " + '%-25.25s' % 'Username' + " " + '%-25.25s' % 'Full Name' + " " + '%-60.60s' % 'Description'
+      postd.each do |role|
+         puts " -  " + '%-6.6s' % role.scope + " " + '%-5.5s' % role.id + " " + '%-25.25s' % role.name + " " + '%-25.25s' % role.full_name + " " + '%-60.60s' % role.description 
+      end
       upp postd
       puts "\n"
    when 4 # show
@@ -1762,8 +1547,24 @@ when 16384 # TARGET QUERY
 
       puts csv_output
    else
-      uputs("ACTION", 'The action requested is not implemented for target: COMMAND')
-      puts 'The action requested is not implemented for target: COMMAND'
+      uputs("ACTION", 'The action requested is not implemented for target: QUERY')
+      puts 'The action requested is not implemented for target: QUERY'
+   end
+when 32768 # TARGET AUTHSRC
+   case @action
+   when 2  # list
+      uputs("ACTION", 'list AUTHSRC action requested')
+      authsrcs = Nexpose::UserAuthenticator.list(@nsc)
+      puts "Authenticator Sources:"
+      puts " -  " + '%-10.10s' % 'Auth Module' + " " + '%-5.5s' % 'Id' + " " + '%-40.40s' % 'Auth Source' + " " + '%-10.10s' % 'External?'
+      authsrcs.each do |src|
+         puts " -  " + '%-10.10s' % src.auth_module + " " + '%-5.5s' % src.id + " " + '%-40.40s' % src.auth_source + " " + '%-10.10s' % src.external.to_s 
+      end
+      upp authsrcs
+      puts "\n"
+   else
+      uputs("ACTION", 'The action requested is not implemented for target: AUTHSRC')
+      puts 'The action requested is not implemented for target: AUTHSRC'
    end
 else
    # there is no default target

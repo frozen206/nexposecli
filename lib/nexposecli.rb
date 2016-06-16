@@ -1,10 +1,9 @@
 require "nexposecli/version"
 require "nexposecli/argparse"
+require "nexposecli/args"
+require "nexposecli/ops"
+require "nexposecli/role"
+require "nexposecli/scan"
 
 module Nexposecli
-  class Chatter
-    def say_hello
-      puts 'This is nexposecli. Coming Soon.'
-    end
-  end
 end
