@@ -37,6 +37,12 @@ module Nexposecli
        short                 : d
        desc                  : The delete action is used to delete a single object
    
+     - name                  : history
+       desc                  : The history action is used to retrieve the history of certain objects, such as reports and scans
+   
+     - name                  : sync
+       desc                  : The sync action is used to retrieve and sync certain objects, such as ldap/ad users
+   
      - name                  : run
        desc                  : The run action is only used to issue commands to the COMMAND object
    
@@ -207,6 +213,10 @@ module Nexposecli
    
      - name                  : config
        desc                  : The config yaml file containing the connection details of the Nexpose Console Server
+       required              : true
+   
+     - name                  : ldapconf
+       desc                  : The ldap/ad config yaml file containing the search details
        required              : true
    
      - name                  : nsc_server

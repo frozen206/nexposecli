@@ -22,6 +22,7 @@ require 'rubygems'
 require 'nexpose'
 require 'nexposecli'
 require 'socket'
+require 'net/ldap'
 require 'digest'
 require 'securerandom'
 require 'netaddr'
@@ -102,6 +103,12 @@ def read_config(conf)
   @nsc_user   = config["config"]["user"]
   @nsc_passwd   = config["config"]["password"]
   @nsc_sites = config["sites"]
+  if config["config"].key?("ldapserver")
+     @ldapserver = config["config"]["ldapserver"]
+     @ldapport = config["config"]["ldapport"]
+     @binduser = config["config"]["binduser"]
+     @bindpassword = config["config"]["bindpassword"]
+  end
 end
 
 def scan_activity()
@@ -297,8 +304,9 @@ uputs("CLI", "Checking for the requested action")
 @action |= 8 if args.update
 @action |= 16 if args.delete
 @action |= 32 if args.run
+@action |= 64 if args.sync
 uputs("ACTION", "The requested action value is: #{@action.to_s}")
-raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32].include?(@action)
+raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64].include?(@action)
 
 uputs("TARGET", "Checking for the requested target")
 @target = 0
@@ -395,7 +403,15 @@ when 1   # TARGET USER
        user.authsrcid = args.authsrc
        user.password = nil
     end
-    user.save(@nsc)
+
+    # Begin User save attempt
+    begin
+       user.save(@nsc)
+    rescue Nexpose::APIError => e
+       STDERR.puts "ERROR [ #{e.to_s} ]"
+       exit(-1)
+    end
+
     puts "The user: #{user.name} was created with id: #{user.id}"
     uputs("USER", "New user created: #{user.name} (id:#{user.id})")
     upp user
@@ -420,6 +436,95 @@ when 1   # TARGET USER
   when 16  # delete
     uputs("ACTION", 'delete USER action requested')
     puts 'Not yet implemented'
+  when 64  # sync
+    uputs("ACTION", 'sync USER action requested')
+    if File.file?(args.ldapconf)
+       ldapconf = YAML.load_file(args.ldapconf)
+    else
+       STDERR.puts "The ldap configuration file can not be found"
+       exit(-1)
+    end
+
+    if !@ldapserver
+       STDERR.puts "The ldapserver configuration parameter was not found in the config file"
+       exit(-1)
+    end
+    ldap_args = {}
+    ldap_args[:host] = @ldapserver
+    ldap_args[:port] = @ldapport
+    if @ldapport.eql? 636
+       ldap_args[:encryption] = :simple_tls
+    end
+
+    ldap_auth = {}
+    ldap_auth[:username] = @binduser
+    ldap_auth[:password] = @bindpassword
+    ldap_auth[:method] = :simple
+    ldap_args[:auth] = ldap_auth
+    ldap = Net::LDAP.new(ldap_args)
+
+    adbase = ldapconf["ldap"]["searchbase"]
+    adgroup = ldapconf["ldap"]["searchgroup"]
+    aduserbase = ldapconf["ldap"]["userbase"]
+
+    puts "Searching for members of [" + adgroup + "]"
+    puts "-- To add users to Nexpose Console: #{@nsc_server}"
+
+    if ldap.bind
+       # authentication succeeded
+       filter = Net::LDAP::Filter.eq("cn", "#{adgroup}")
+       attrs  = 'member'
+       newusers = 0
+       failedusers = 0
+       ldap.search( :base => adbase, :filter => filter, :attributes => attrs ) do |entry|
+          puts "The AD Security Group or Exchange DL: [" + entry[:dn].first.match(/^CN\=([^,]+),/)[1] + "] has the following members:"
+            entry[:member].each do |value|
+              userCN = value.match(/CN\=([^,]+),/)[1]
+              filter2 = Net::LDAP::Filter.eq("cn", userCN)
+              attrs = ['name', 'sAMAccountName', 'userPrincipalName', 'objectCategory']
+              ldap.search( :base => aduserbase, :filter => filter2, :attributes => attrs ) do |user|
+                 objectCN = user[:objectcategory].to_s.match(/CN\=([^,]+),/)[1]
+                 # puts " --> " + objectCN
+                 if objectCN.eql? "Person"
+                    puts " --> Attempting to add: " + user[:samaccountname].first + " / " + userCN + " (#{user[:userprincipalname].first})"
+
+                    user = Nexpose::User.new(user[:samaccountname].first,
+                                             userCN,
+                                             password=nil,
+                                             role_name = ldapconf["ldap"]["nxdefaultrole"],
+                                             id = -1,
+                                             enabled = 1,
+                                             email = user[:userprincipalname].first,
+                                             all_sites = false,
+                                             all_groups = false,
+                                             token = nil)
+                    user.authsrcid = ldapconf["ldap"]["nscauthsrc"]
+
+                    # Begin User save attempt
+                    begin
+                       user.save(@nsc)
+                    rescue Nexpose::APIError => e
+                       STDERR.puts "ERROR [ #{e.to_s} ]"
+                       failedusers += 1
+                       next
+                    end
+
+                    newusers += 1
+                    puts "The user: #{user.name} was created with id: #{user.id}"
+                    uputs("USER", "New user created: #{user.name} (id:#{user.id})")
+                    upp user
+
+                 else
+                    puts " --> " + user[:samaccountname].first + " is a " + user[:objectcategory].first
+                 end
+              end
+            end
+        end
+    else
+       # bind/authentication failed
+       STDERR.puts "ERROR: ldap/ad bind failed."
+       exit(-1)
+    end
   else
     uputs("ACTION", 'The action requested is not implemented for target')
     puts 'The action requested is not implemented for target'

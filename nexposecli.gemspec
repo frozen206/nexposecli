@@ -20,6 +20,7 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = '>= 2.1'
   spec.add_runtime_dependency "nexpose", '~> 4.0', '>= 4.0.4'
   spec.add_runtime_dependency "netaddr", '~> 1.5', '>= 1.5.1'
+  spec.add_runtime_dependency "net-ldap", '~> 0.14', '>= 0.14.0'
 
   spec.add_development_dependency "bundler", "~> 1.12"
   spec.add_development_dependency "rake", "~> 10.0"
