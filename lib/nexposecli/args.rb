@@ -118,6 +118,10 @@ module Nexposecli
        desc                  : The target port to be acted upon by the action
        required              : true
    
+     - name                  : password
+       desc                  : The target password
+       required              : true
+   
      - name                  : authsrc
        desc                  : The target authsrc id
        required              : true

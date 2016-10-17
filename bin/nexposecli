@@ -56,7 +56,7 @@ max_scan_task_attempts = 3
 def uputs( facility, ulog )
   # add string validation
   @logger.info( @nsc_server + "," + @evm_reqid + " [" + facility.to_s + "] " + ulog.to_s)
-  if $debug
+  if $debug || (facility.to_s == "BAIL")
     puts "[" + facility.to_s + "]" + ulog.to_s
   end
 end
@@ -415,24 +415,44 @@ when 1   # TARGET USER
     puts "The user: #{user.name} was created with id: #{user.id}"
     uputs("USER", "New user created: #{user.name} (id:#{user.id})")
     upp user
-  when 2   # list
+  when 2, 4   # list, show
     uputs("ACTION", 'list USER action requested')
     user_listing = @nsc.list_users
     puts "Users:"
-    puts " -  " + '%-6.6s' % 'Admin?' + " " + '%-15.15s' % 'Username' + " " + '%-25.25s' % 'Full Name' + " " + '%-30.30s' % 'Email' + " " + '%-25.25s' % "Role" + "\tAuth Module:Source"
+    puts " -  " + '%-5.5s' % 'Id' + " " + '%-6.6s' % 'Admin?' + " " + '%-15.15s' % 'Username' + " " + '%-25.25s' % 'Full Name' + " " + '%-30.30s' % 'Email' + " " + '%-25.25s' % "Role" + "\tAuth Module:Source"
     user_listing.each do |user|
        role = Nexpose::User.load(@nsc, user.id).role_name
-       puts " -  " + '%-6.6s' % user.is_admin.to_s + " " + '%-15.15s' % user.name + " " + '%-25.25s' % user.full_name + " " + '%-30.30s' % user.email + " " + '%-25.25s' % role + "\t#{user.auth_module}:#{user.auth_source}"
+       if (@action == 4) && (!args.id.to_str.eql? user.name.to_s)
+          next
+       end
+       puts " -  " + '%-5.5s' % user.id + " " + '%-6.6s' % user.is_admin.to_s + " " + '%-15.15s' % user.name + " " + '%-25.25s' % user.full_name + " " + '%-30.30s' % user.email + " " + '%-25.25s' % role + "\t#{user.auth_module}:#{user.auth_source}"
     end
     upp user_listing
-  when 4   # show
-    uputs("ACTION", 'show USER action requested')
-    userid = args.id.to_str
-    user = Nexpose::User.load(@nsc, userid)
-    pp user
+#  when 4   # show
+#    uputs("ACTION", 'show USER action requested')
+#    userid = args.id.to_str
+#    user = Nexpose::User.load(@nsc, userid)
+#    pp user
   when 8   # update
     uputs("ACTION", 'update USER action requested')
-    puts 'Not yet implemented'
+    userid = args.id.to_str
+    user = Nexpose::User.load(@nsc, userid)
+    if args.authsrc
+       user.authsrcid = args.authsrc
+       user.password = nil
+    end
+    if args.password
+      user.password = "#{args.password}"
+    end
+
+    # Begin User save attempt
+    begin
+       user.save(@nsc)
+    rescue Nexpose::APIError => e
+       STDERR.puts "ERROR [ #{e.to_s} ]"
+       exit(-1)
+    end
+    puts "User #{user.name} has been updated. Run a --show --USER --id <id> to confirm."
   when 16  # delete
     uputs("ACTION", 'delete USER action requested')
     puts 'Not yet implemented'
@@ -912,6 +932,16 @@ when 8   # TARGET SCAN
       end
    when 2   # list
       uputs("SCAN", 'list SCAN action requested')
+      # EJG
+      scans = @nsc.past_scans(args.id.to_i)
+      puts "Requested: nsc.past_scans(#{args.id}), but past scans length is: #{scans.length}"
+      puts "Past Scans:"
+      scans.each do |scan|
+         puts " -  " + '%-6.6s' % scan.id + " " + '%-15.15s' % scan.engine_name + " " + '%-30.30s' % scan.end_time + " " + '%-25.25s' % scan.status
+      end
+      exit(0)
+
+      # EJG
       scan_activity = scan_activity()
       upp scan_activity
       if scan_activity.length > 0
@@ -1640,6 +1670,14 @@ when 16384 # TARGET QUERY
       sql_config = Nexpose::AdhocReportConfig.new(nil, 'sql')
       sql_config.add_filter('version', '2.0.1')
       sql_config.add_filter('query', sql)
+      # EJG
+      if args.filter
+         if ['site','group','device','scan','vuln-categories','vuln-severity','vuln-status'].include?(args.filter)
+            sql_config.add_filter(args.filter, args.filterv)
+         else
+           ubail(-1, "The report filter type passed is not valid")
+         end
+      end
 
       if args.timeout
          rpt_to = args.timeout.to_int
