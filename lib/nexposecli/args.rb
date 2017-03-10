@@ -15,11 +15,17 @@ module Nexposecli
        short                 : v
        desc                  : Run verbosely
    
+     - name                  : dryrun
+       desc                  : Dry run mode, do not commit to Console
+   
      - comment               : EVM Administrative Actions
    
      - name                  : create
        short                 : c
        desc                  : The create action is used for new objects
+   
+     - name                  : copy
+       desc                  : The copy action is used to copy of objects of the same type
    
      - name                  : list
        short                 : l
@@ -97,6 +103,9 @@ module Nexposecli
    
      - name                  : CONSOLE
        desc                  : The CONSOLE target is used to alter the CONSOLE nsc connection object
+   
+     - name                  : TEMPLATE
+       desc                  : The TEMPLATE target is used to alter the TEMPLATE nsc connection object
    
      - name                  : COMMAND
        short                 : C

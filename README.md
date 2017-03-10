@@ -17,8 +17,9 @@ or an example of running a query to list all active scans
     nexposecli --config ./lab.yaml --list --SCAN
 
 how to run an adhoc sql query and export via csv
+NOTE: Consider the potential impact of running SQL queries without filters.
 
-    nexposecli --run --QUERY --config ./lab.yaml --sql "select * from dim_asset"
+    nexposecli --run --QUERY --config ./lab.yaml --sql "select * from dim_asset limit 10"
 
 or for more complex sql queries, put the sql into a file and run
 
@@ -49,6 +50,14 @@ how to add a new user, with default password of "nxpassword" until moved to yaml
 how to export packaged scan data in a single zip file
 
     nexposecli --config ./lab.yaml --SCAN --update --scanpath ./ --action export --id <scan id>
+
+how to export packaged scan data in a single zip file
+
+    nexposecli --config ./lab.yaml --SCAN --update --scanpath ./ --action import --filterv scan-<scan id>.zip --id <site id>
+
+how to import packaged scan data into a site
+
+    nexposecli --config ./lab.yaml --SCAN --update --scanpath ./ --action import --filterv <scan zip> --id <site id>
 
 where ./lab.yaml consists of the following:
 

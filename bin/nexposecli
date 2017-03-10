@@ -28,6 +28,7 @@ require 'securerandom'
 require 'netaddr'
 require 'logger'
 require 'yaml'
+require 'json'
 require 'csv'
 # for debug, this dumps the ruby objects to STDOUT
 require 'pp'
@@ -35,6 +36,7 @@ require 'pp'
 ##############################################################################
 # Set default var values
 $debug = false
+$dryrun = false
 uf_scanners = ''
 
 @logpath = "./"
@@ -285,6 +287,10 @@ if args.scanpath
 end
 
 $debug = TRUE if args.verbose
+$dryrun = TRUE if args.dryrun
+uputs("CLI", "Command-line verbosity mode is #{$debug.to_s}")
+uputs("CLI", "Command-line dry run mode is #{$dryrun.to_s}")
+uputs("CLI", "Command-line args parsed for #{$0}")
 uputs("CLI", "Command-line args parsed for #{$0}")
 uputs("CLI", "Args: #{args.inspect}")
 
@@ -305,8 +311,9 @@ uputs("CLI", "Checking for the requested action")
 @action |= 16 if args.delete
 @action |= 32 if args.run
 @action |= 64 if args.sync
+@action |= 128 if args.copy
 uputs("ACTION", "The requested action value is: #{@action.to_s}")
-raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64].include?(@action)
+raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64,128].include?(@action)
 
 uputs("TARGET", "Checking for the requested target")
 @target = 0
@@ -326,8 +333,10 @@ uputs("TARGET", "Checking for the requested target")
 @target |= 8192  if args.ROLE
 @target |= 16384  if args.QUERY
 @target |= 32768  if args.AUTHSRC
+@target |= 65536  if args.GROUP
+@target |= 131072  if args.SCHEDULE
 uputs("TARGET", "The requested target value is: #{@target.to_s}")
-raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768].include?(@target)
+raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072].include?(@target)
 
 # Needs to potentially move into TARGET object or module instance var
 ## First NSC Connection and Session creation
@@ -1040,23 +1049,39 @@ when 16  # TARGET SITE
       if (args.id != nil)
          scan_site_id = args.id.to_i
       end
+
       begin
          site = Nexpose::Site.load(@nsc, scan_site_id)
       rescue Nexpose::APIError => e
          STDERR.puts "ERROR [ " + e.to_s + " ]"
          exit(-1)
       end
+      upp(site) 
+      puts("\n")
       puts("Site: id:#{site.id}\t name:'#{site.name}'\tconfig version:#{site.config_version}\n--description:#{site.description}\n")
-      puts("--scan engine: #{site.engine}\tscan_template: '#{site.scan_template_name}'\n")
-      puts("--assets:")
-      site.assets.each do |iprange|
+      puts("--default scan engine: #{site.engine_id}\tdefault scan_template: '#{site.scan_template_id}'\n")
+      puts("--scan targets:")
+      site.included_scan_targets[:addresses].each do |iprange|
          puts("  IPRange from: #{iprange.from} - #{iprange.to}\n")
       end
-      puts("--exclude:")
-      site.exclude.each do |iprange|
+      puts("--excluded scan targets:")
+      site.excluded_scan_targets[:addresses].each do |iprange|
          puts("  IPRange from: #{iprange.from} - #{iprange.to}\n")
       end
-      upp site
+      puts("--active assets:")
+      assets = @nsc.list_site_devices(scan_site_id)
+      assets.each do |asset|
+         print("   Asset Id: #{asset.id}, IP Address: #{asset.address}, Risk Score: #{asset.risk_score} Hostnames: [")
+         asset_detail = Nexpose::Asset.load(@nsc, asset.id)
+         if asset_detail.host_names
+            asset_detail.host_names.each do |hostname|
+               print("#{hostname},")
+            end
+         end
+         print("] OS: #{asset_detail.os_cpe}\n")
+         upp(asset_detail)
+      end
+      # upp site
    when 8   # update
       uputs("ACTION", 'update SITE action requested')
       site = ""
@@ -1083,9 +1108,101 @@ when 16  # TARGET SITE
             exit(-1)
          end
          site.exclude.push(Nexpose::IPRange.new(valid_xrange.split(',').first.to_s, valid_xrange.split(',').last.to_s))
-         site.save(@nsc)
+         if $dryrun
+            upp(site)
+            puts "Site exclude request tested."
+         else
+            site.save(@nsc)
+         end
+      when "import-assets-csv"
+         if File.file?(args.filterv)
+            external_assets = []
+            new_assets = CSV.read(args.filterv, :headers=>true)
+            new_assets.each do |new_asset|
+               upp(new_asset)
+               puts("IP: #{new_asset['ip']} OS: #{new_asset['os']}")
+               external_asset = Nexpose::External::Asset.new
+               external_asset.ip = new_asset['ip']
+               external_asset.aliases = []
+               external_asset.fqdn = new_asset['fqdn']
+               external_asset.net_bios = new_asset['net_bios']
+               external_asset.mac = new_asset['mac']
+               external_asset.host_type = new_asset['host_type']
+               external_asset.os = "#{new_asset['os']}"
+               import_time = Time.now
+               external_asset.scan_date = %Q[#{import_time.strftime("%Y%m%dT%H%M%S.000-0600")}]
+               upp(external_asset)
+               external_assets.push(external_asset)
+            end
+            asset_import = @nsc.import_assets(scan_site_id, Array(external_assets))
+            upp(asset_import)
+         else
+            puts("ERROR the filterv value passed is not a valid file.\n")
+         end
+      when "rsam-hostname", "RSAM-HOSTNAME"
+         # RSAM Integration Asset housekeeping to reduce hostnames to a single usable value
+         external_assets = []
+         assets = @nsc.list_site_devices(scan_site_id)
+         assets.each do |site_asset|
+            asset = Nexpose::Asset.load(@nsc, site_asset.id)
+            external_asset = Nexpose::External::Asset.new
+            external_asset.ip = asset.ip
+            external_asset.aliases = []
+
+            upp(asset.host_names)
+            if (asset.host_names.nil?)
+               puts("Asset had zero hostnames set. [#{asset.ip}]")
+               next
+            elsif (asset.host_names.length == 1) && (asset.host_names[0] !~ /^[^.]+\./)
+               puts("Asset had the shortname already set. [#{asset.host_names[0]}]\n")
+               next
+            elsif (asset.host_names.length == 1) && (/^(?<short_name>[^.]+)\./ =~ asset.host_names[0])
+               puts("Asset has the fqdn and needs the shortname to be set. [#{asset.host_names[0]}]")
+               external_asset.fqdn = asset.host_names[0]
+               external_asset.net_bios = short_name
+            else
+               asset.host_names.each do |hostname|
+                  puts("Asset has the multiple hostnames set. [#{hostname}]")
+                  if /^[^.]+\./ =~ hostname
+                     external_asset.fqdn = ''
+                  else
+                     external_asset.net_bios = hostname
+                  end
+               end
+            end
+            external_asset.mac = asset.mac
+            external_asset.host_type = asset.host_type
+            import_time = Time.now
+            external_asset.scan_date = %Q[#{import_time.strftime("%Y%m%dT%H%M%S.000-0600")}]
+            external_asset.os = asset.os_cpe
+
+            # grab and set lazy attrs
+            # if (asset.vulnerability_instances.nil?)
+            # upp(asset.vulnerability_instances)
+            external_asset.vulnerabilities = []
+            asset.vulnerability_instances.each do |old_vuln|
+               new_vuln = Nexpose::External::VulnerabilityCheck.new(
+                  old_vuln.vulnerability_id,
+                  Nexpose::External::VulnerabilityCheck::Status::EXPLOITED,
+                  old_vuln.proof,
+                  old_vuln.key)
+               external_asset.vulnerabilities << new_vuln
+            end
+
+            upp(external_asset)
+            external_assets.push(external_asset)
+         end
+
+         upp(external_assets)
+         puts("SITE RSAM Hostname update for Site Id [#{scan_site_id}], contains [#{assets.length}] assets, attempting updates to [#{external_assets.length}] assets.")
+         if (external_assets.empty?)
+            puts("The Site Assets have no hostnames or are already all shortnames.")
+         else
+            # asset_import = @nsc.import_assets(scan_site_id, Array(external_assets))
+            # upp(asset_import)
+         end
       else
-        puts 'Not yet implemented'
+         puts 'Not yet implemented'
       end
    when 16  # delete
       uputs("ACTION", 'delete SITE action requested')
@@ -1110,18 +1227,115 @@ when 32  # TARGET ASSET
    when 4   # show
       uputs("ACTION", 'show ASSET action requested')
       if is_numeric(args.id)
-         ag = Nexpose::AssetGroup.load(@nsc, args.id)
-         puts "There are #{ag.assets.size} assets in asset group id: #{args.id} name: \"#{ag.name}\".\n"
-         ag.assets.each do |asset|
-            puts "id: #{asset.id.to_s.ljust(10)} address: #{asset.address}"
-         end
+         asset = Nexpose::Asset.load(@nsc, args.id)
+         # upp(asset.vulnerability_instances)
+         # upp(asset.vulnerabilities)
+         upp(asset.services)
       else
-         puts 'The Asset Group Id must be numeric.'
+         puts 'The Asset Id must be numeric.'
       end
-      upp(ag)
+      upp(asset)
    when 8   # update
       uputs("ACTION", 'update ASSET action requested')
-      puts 'Not yet implemented'
+      if is_numeric(args.id)
+
+         # GOMEZ
+         # asset = Nexpose::Asset.load(@nsc, args.id)
+
+    external_asset = Nexpose::External::Asset.new
+    external_asset.ip = '10.3.70.77'
+    check = Nexpose::External::VulnerabilityCheck.new(
+      'snmp-read-0001',
+      Nexpose::External::VulnerabilityCheck::Status::VERSION,
+      'External scanning resource.')
+    external_asset.vulnerabilities << check
+
+    check = Nexpose::External::VulnerabilityCheck.new(
+      'ssh-default-account-admin-password-admin',
+      Nexpose::External::VulnerabilityCheck::Status::POTENTIAL,
+      'External scanning resource.')
+    external_asset.vulnerabilities << check
+
+    service_check = Nexpose::External::VulnerabilityCheck.new(
+      'http-generic-script-blind-sql-injection',
+      Nexpose::External::VulnerabilityCheck::Status::EXPLOITED,
+      'External scanning resource.',
+      '/')
+    external_asset.vulnerabilities << service_check
+
+    service_check = Nexpose::External::VulnerabilityCheck.new(
+      'http-generic-script-blind-sql-injection',
+      Nexpose::External::VulnerabilityCheck::Status::EXPLOITED,
+      'External scanning resource.',
+      '/home/')
+    external_asset.vulnerabilities << service_check
+
+    service_check = Nexpose::External::VulnerabilityCheck.new(
+      'http-generic-script-blind-sql-injection',
+      Nexpose::External::VulnerabilityCheck::Status::EXPLOITED,
+      'External scanning resource.',
+      '/')
+    external_asset.vulnerabilities << service_check
+    # external_asset.vulnerabilities = []
+
+    external_asset.aliases = []
+    # external_asset.fqdn = 'gomez-nexpose01-ext.rapidcloud.priv'
+    external_asset.net_bios = 'CleanNexpos-0'
+    external_asset.mac = '00:50:56:02:18:19'
+    external_asset.host_type = 'GUEST'
+    external_asset.scan_date = '20141218T074721.823-0800'
+    external_asset.os = 'cpe:/o:canonical:ubuntu_linux:12.04::~~lts~~~'
+
+    external_asset.software = ['cpe:/a:microsoft:office:2007',
+                               'cpe:/a:microsoft:.net_framework:3.0:sp2',
+                               'cpe:/a:microsoft:.net_framework:2.0:sp2']
+    external_asset.software = []
+
+         external_asset.services = [
+           Nexpose::External::Service.new(135, 'TCP', 'DCE Endpoint Resolution'),
+           Nexpose::External::Service.new(137, 'UDP', 'CIFS Name Service'),
+           Nexpose::External::Service.new(139, 'TCP', 'CIFS  Windows Vista (TM) Enterprise 6.0'),
+           Nexpose::External::Service.new(445, 'TCP', 'CIFS  Windows Vista (TM) Enterprise 6.0') ]
+         external_asset.services = []
+
+         external_asset.users = [
+           Nexpose::UserAccount.new('Guest', 10, '', [{'gid' => '216'}]),
+           Nexpose::UserAccount.new('Administrator', 1, 'Administrator', []),
+           Nexpose::UserAccount.new('NetworkService', 403, 'NetworkService', []) ]
+         external_asset.users = []
+
+         external_asset.groups = [
+           Nexpose::GroupAccount.new('ANONYMOUS LOGON', 123),
+           Nexpose::GroupAccount.new('Everyone', 124),
+           Nexpose::GroupAccount.new('LOCAL SERVICE', 1),
+           Nexpose::GroupAccount.new('SYSTEM'),
+           Nexpose::GroupAccount.new('Guests', 122, [{'just' => 'because'}]),
+           Nexpose::GroupAccount.new('Administrators', 10) ]
+         external_asset.groups = []
+
+         external_asset.files = [
+           Nexpose::File.new('ADMIN$', -1, true, [{'comment' => 'Remote Admin'}]),
+           Nexpose::File.new('C$', 665321, true),
+           Nexpose::File.new('c:\\', 665321, true) ]
+
+         external_asset.unique_identifiers = []
+         upp(external_asset)
+
+         # test_json = JSON.generate(Array(Array([external_asset])).map(&:to_h))
+
+         # test_hash = JSON.parse(test_json)[0] 
+    
+         # upp( test_hash )
+
+         # GOMEZ
+         # test_back = JSON.generate(test_hash)
+         # upp( test_back)
+
+         # asset_import = @nsc.import_assets(39, Array([external_asset]))
+         # upp(asset_import)
+      else
+         puts 'The Asset Id must be numeric.'
+      end
    when 16  # delete
       uputs("ACTION", 'delete ASSET action requested')
       puts 'Not yet implemented'
@@ -1607,6 +1821,25 @@ when 2048 # TARGET CONSOLE
       uputs("ACTION", 'The action requested is not implemented for target')
       puts 'The action requested is not implemented for target'
    end
+when 4096 # TARGET TEMPLATE
+   case @action
+   when 2  # list
+      uputs("ACTION", 'list TEMPLATE action requested')
+      templates = @nsc.list_scan_templates
+      templates.each do |template|
+         scan_template = Nexpose::ScanTemplate.load(@nsc, "#{template.id}")
+         puts "Scan Template Id: #{scan_template.id}"
+         puts "Scan Template Name: #{scan_template.name}"
+         # upp scan_template
+      end
+   when 128  # copy
+      uputs("ACTION", 'copy TEMPLATE action requested')
+      new_scan_template = Nexpose::ScanTemplate.load(@nsc, "#{args.id}")
+      upp new_scan_template.xml
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
 when 8192 # TARGET ROLE
    case @action
    when 1  # create, via copy for now
@@ -1672,8 +1905,12 @@ when 16384 # TARGET QUERY
       sql_config.add_filter('query', sql)
       # EJG
       if args.filter
-         if ['site','group','device','scan','vuln-categories','vuln-severity','vuln-status'].include?(args.filter)
-            sql_config.add_filter(args.filter, args.filterv)
+         # if ['site','group','device','scan','vuln-categories','vuln-severity','vuln-status'].include?(args.filter)
+         if ['site','group','device','scan'].include?(args.filter)
+            groups = args.filterv.split(",")
+            groups.each do |group|
+               sql_config.add_filter(args.filter, group.to_i)
+            end
          else
            ubail(-1, "The report filter type passed is not valid")
          end
@@ -1708,6 +1945,41 @@ when 32768 # TARGET AUTHSRC
    else
       uputs("ACTION", 'The action requested is not implemented for target: AUTHSRC')
       puts 'The action requested is not implemented for target: AUTHSRC'
+   end
+when 65536  # TARGET GROUP
+   case @action
+   when 1   # create
+      uputs("ACTION", 'create GROUP action requested')
+      puts 'Not yet implemented'
+   when 2   # list
+      uputs("ACTION", 'list GROUP action requested')
+      assetgroups = @nsc.asset_groups
+      uputs("ACTION", "There are #{assetgroups.size} asset groups.")
+      assetgroups.each do |ags|
+         puts "id: #{ags.id.to_s.ljust(10)} name: #{ags.name}"
+      end
+      upp assetgroups
+   when 4   # show
+      uputs("ACTION", 'show GROUP action requested')
+      if is_numeric(args.id)
+         ag = Nexpose::AssetGroup.load(@nsc, args.id)
+         puts "There are #{ag.assets.size} assets in asset group id: #{args.id} name: \"#{ag.name}\".\n"
+         ag.assets.each do |asset|
+            puts "id: #{asset.id.to_s.ljust(10)} address: #{asset.address}"
+         end
+      else
+         puts 'The Asset Group Id must be numeric.'
+      end
+      upp(ag)
+   when 8   # update
+      uputs("ACTION", 'update GROUP action requested')
+      puts 'Not yet implemented'
+   when 16  # delete
+      uputs("ACTION", 'delete GROUP action requested')
+      puts 'Not yet implemented'
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
    end
 else
    # there is no default target
