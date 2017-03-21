@@ -35,8 +35,11 @@ require 'pp'
 
 ##############################################################################
 # Set default var values
+$nxport = 3780
 $debug = false
+$format = 'default'
 $dryrun = false
+$multitenant = false
 uf_scanners = ''
 
 @logpath = "./"
@@ -287,10 +290,10 @@ if args.scanpath
 end
 
 $debug = TRUE if args.verbose
+$multitenant = TRUE if args.silo
 $dryrun = TRUE if args.dryrun
 uputs("CLI", "Command-line verbosity mode is #{$debug.to_s}")
 uputs("CLI", "Command-line dry run mode is #{$dryrun.to_s}")
-uputs("CLI", "Command-line args parsed for #{$0}")
 uputs("CLI", "Command-line args parsed for #{$0}")
 uputs("CLI", "Args: #{args.inspect}")
 
@@ -335,8 +338,9 @@ uputs("TARGET", "Checking for the requested target")
 @target |= 32768  if args.AUTHSRC
 @target |= 65536  if args.GROUP
 @target |= 131072  if args.SCHEDULE
+@target |= 262144  if args.SILO
 uputs("TARGET", "The requested target value is: #{@target.to_s}")
-raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072].include?(@target)
+raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144].include?(@target)
 
 # Needs to potentially move into TARGET object or module instance var
 ## First NSC Connection and Session creation
@@ -360,7 +364,11 @@ end
 # Make the initial connection to the NSC server
 uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
 begin
-  @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+  if $multitenant
+     @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, $nxport, args.silo.to_s)
+  else
+     @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+  end
 rescue SystemCallError => e
   # EJG add conditional api error handling...
   uputs("CONNECT", "An error occurred while attempting to connect to the specified server: #{e.to_s}")
@@ -565,6 +573,7 @@ when 2   # TARGET ENGINE
     puts 'Not yet implemented'
   when 2   # list
     uputs("ACTION", 'list ENGINE action requested')
+
     uf_scanners = @nsc.engines
     if uf_scanners.length > 0
       if args.action
@@ -584,6 +593,7 @@ when 2   # TARGET ENGINE
         end
       else
         uf_scanners.each do |scanner|
+          upp scanner
           puts("\t- status: #{scanner.status}\t id:#{scanner.id}\t name:'#{scanner.name}'\n")
         end
       end
@@ -594,6 +604,8 @@ when 2   # TARGET ENGINE
   when 4   # show
     uputs("ACTION", 'show ENGINE action requested')
     puts 'Not yet implemented'
+    engine = Nexpose::Engine.load(@nsc, args.id)
+    upp engine
   when 8   # update
     uputs("ACTION", 'update ENGINE action requested')
     puts 'Not yet implemented'
@@ -722,7 +734,11 @@ when 8   # TARGET SCAN
       # Make a connection and login to the NSC server
       uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
       begin
-        @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+        if $multitenant
+           @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, $nxport, args.silo.to_s)
+        else
+           @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+        end
         @nsc.login
       rescue SystemCallError => e
         # EJG add conditional api error handling and consider wrapping coonect/login into a method...
@@ -808,7 +824,11 @@ when 8   # TARGET SCAN
         # Make a connection and login to the NSC server
         uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
         begin
-          @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+          if $multitenant
+             @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, $nxport, args.silo.to_s)
+          else
+             @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+          end
           @nsc.login
         rescue SystemCallError => e
           # EJG add conditional api error handling and consider wrapping coonect/login into a method...
@@ -908,7 +928,11 @@ when 8   # TARGET SCAN
          # Make a connection and login to the NSC server
          uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
          begin
-           @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+           if $multitenant
+              @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, $nxport, args.silo.to_s)
+           else
+              @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+           end
            @nsc.login
          rescue SystemCallError => e
            # EJG add conditional api error handling and consider wrapping coonect/login into a method...
@@ -942,13 +966,13 @@ when 8   # TARGET SCAN
    when 2   # list
       uputs("SCAN", 'list SCAN action requested')
       # EJG
-      scans = @nsc.past_scans(args.id.to_i)
-      puts "Requested: nsc.past_scans(#{args.id}), but past scans length is: #{scans.length}"
-      puts "Past Scans:"
-      scans.each do |scan|
-         puts " -  " + '%-6.6s' % scan.id + " " + '%-15.15s' % scan.engine_name + " " + '%-30.30s' % scan.end_time + " " + '%-25.25s' % scan.status
-      end
-      exit(0)
+      # scans = @nsc.past_scans(args.id.to_i)
+      # puts "Requested: nsc.past_scans(#{args.id}), but past scans length is: #{scans.length}"
+      # puts "Past Scans:"
+      # scans.each do |scan|
+      #    puts " -  " + '%-6.6s' % scan.id + " " + '%-15.15s' % scan.engine_name + " " + '%-30.30s' % scan.end_time + " " + '%-25.25s' % scan.status
+      # end
+      # exit(0)
 
       # EJG
       scan_activity = scan_activity()
@@ -1035,7 +1059,27 @@ when 16  # TARGET SITE
    case @action
    when 1   # create
       uputs("ACTION", 'create SITE action requested')
-      puts 'Not yet implemented, and not likely to be implemented'
+      unless (
+        args.name != nil && args.range && args.template
+      )
+        raise 'Please supply the site name, ip range, and scan template id to define the site, see --help'
+      end
+      site = Nexpose::Site.new(args.name, args.template)
+
+      if args.range.split('-').size == 2
+         site.included_addresses << Nexpose::IPRange.new(args.range.split('-')[0], args.range.split('-')[1])
+      else
+         site.included_addresses << Nexpose::IPRange.new(args.range)
+      end
+
+      begin
+         site_created = site.save(@nsc)
+      rescue Nexpose::APIError => e
+         uputs("SITE", "An error occurred while attempting to save the Site: #{e.to_s}")
+         STDERR.puts "ERROR [ " + e.to_s + " ]"
+         exit(-1)
+      end
+      puts "Site was successfully created. The Site Id is: #{site_created}"
    when 2   # list
       uputs("ACTION", 'list SITE action requested')
       site_listing = @nsc.list_sites
@@ -1068,20 +1112,26 @@ when 16  # TARGET SITE
       site.excluded_scan_targets[:addresses].each do |iprange|
          puts("  IPRange from: #{iprange.from} - #{iprange.to}\n")
       end
-      puts("--active assets:")
-      assets = @nsc.list_site_devices(scan_site_id)
-      assets.each do |asset|
-         print("   Asset Id: #{asset.id}, IP Address: #{asset.address}, Risk Score: #{asset.risk_score} Hostnames: [")
-         asset_detail = Nexpose::Asset.load(@nsc, asset.id)
-         if asset_detail.host_names
-            asset_detail.host_names.each do |hostname|
-               print("#{hostname},")
-            end
+      
+      # If detail is requested, note this will return all assets
+      if args.action
+        case args.action
+        when "assets", "detail"
+           puts("--active assets:")
+           assets = @nsc.list_site_devices(scan_site_id)
+           assets.each do |asset|
+              print("   Asset Id: #{asset.id}, IP Address: #{asset.address}, Risk Score: #{asset.risk_score} Hostnames: [")
+              asset_detail = Nexpose::Asset.load(@nsc, asset.id)
+              if asset_detail.host_names
+                 asset_detail.host_names.each do |hostname|
+                    print("#{hostname},")
+                 end
+              end
+              print("] OS: #{asset_detail.os_cpe}\n")
+              upp(asset_detail)
          end
-         print("] OS: #{asset_detail.os_cpe}\n")
-         upp(asset_detail)
+       end
       end
-      # upp site
    when 8   # update
       uputs("ACTION", 'update SITE action requested')
       site = ""
@@ -1389,8 +1439,11 @@ when 64  # TARGET REPORT
       puts "---\n- Report Id: " + report_config.id.to_s + " \n"
       puts "---\n- The report can be found via:\n https://#{@nsc_server}:3780" + report_summary.uri.to_s + "\n"
 
-      # download("https://#{@nsc_server}:3780" + report_summary.uri.to_s, "./tmp/RemediationPlan-" + Time.now.strftime("%Y%m%d_%H%M%S") + ".pdf", nsc)
-      download("https://#{@nsc_server}:3780" + report_summary.uri.to_s, "./tmp/doc.pdf", @nsc)
+      report_filename = report_summary.uri.split('/').last
+      if (args.name != nil)
+         report_filename.sub! 'Document', "#{args.name}"
+      end
+      download("https://#{@nsc_server}:3780" + report_summary.uri.to_s, "./#{Time.now.strftime("%Y%m%d_%H%M%S_")}#{report_filename}", @nsc)
    end
 
    when 2   # list
@@ -1828,9 +1881,8 @@ when 4096 # TARGET TEMPLATE
       templates = @nsc.list_scan_templates
       templates.each do |template|
          scan_template = Nexpose::ScanTemplate.load(@nsc, "#{template.id}")
-         puts "Scan Template Id: #{scan_template.id}"
-         puts "Scan Template Name: #{scan_template.name}"
-         # upp scan_template
+         puts "Scan Template Id: #{scan_template.id} \tScan Template Name: #{scan_template.name}"
+         upp scan_template
       end
    when 128  # copy
       uputs("ACTION", 'copy TEMPLATE action requested')
@@ -1977,6 +2029,61 @@ when 65536  # TARGET GROUP
    when 16  # delete
       uputs("ACTION", 'delete GROUP action requested')
       puts 'Not yet implemented'
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 262144  # TARGET SILO
+   case @action
+   when 1   # create
+      uputs("ACTION", 'create SILO action requested')
+      silo = Nexpose::Silo.new
+      silo.max_assets = args.maxassets
+      silo.max_users = args.maxusers
+      silo.name = args.name
+      silo.id = args.id
+      silo.profile_id = 'default'
+      silo_create = 'SILO NOT CREATED'
+
+      begin
+        silo_create = silo.create(@nsc)
+      rescue Nexpose::APIError => e
+        # EJG add conditional api error handling...
+        uputs("SILO", "An error occurred while attempting to create the silo: #{e.to_s}")
+        STDERR.puts "ERROR [ " + e.to_s + " ]"
+        exit(-1)
+      end
+      puts "Silo successfully created for silo id: #{silo_create}"
+      upp silo
+
+      # Add current user as GA to the new silo
+      user = Nexpose::MultiTenantUser.load(@nsc, @nsc.get_user_id(@nsc_user).id)
+      user.silo_access << Nexpose::SiloAccess.new do |access|
+        access.silo_id = silo_create
+        access.role_name = Nexpose::Role::GLOBAL_ADMINISTRATOR
+        access.default = false
+        access.all_sites = true
+        access.all_groups = true
+      end
+      begin
+         user.save(@nsc)
+      rescue Nexpose::APIError => e
+        # EJG add conditional api error handling...
+        uputs("SILO", "An error occurred while attempting to the user: #{e.to_s}")
+        STDERR.puts "ERROR [ " + e.to_s + " ]"
+        exit(-1)
+      end
+      puts "Successfully added user[#{@nsc_user}] to silo id: #{silo_create}"
+      upp user
+   when 2   # list
+      uputs("ACTION", 'list SILO action requested')
+      silos = @nsc.list_silos
+      hdr = '%-15s' % 'id' + ' ' + '%-15s' % 'profile id' + ' ' + '%10s' % 'max users' + ' ' + '%15s' % 'max assets' + ' name'
+      puts hdr
+      silos.each do |silo|
+         puts "#{silo.id.to_s.ljust(15)} #{silo.profile_id.ljust(15)} #{silo.max_users.rjust(10)} #{silo.max_assets.rjust(15)} #{silo.name}"
+         upp silo
+      end
    else
       uputs("ACTION", 'The action requested is not implemented for target')
       puts 'The action requested is not implemented for target'

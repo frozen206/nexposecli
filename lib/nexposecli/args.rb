@@ -78,6 +78,9 @@ module Nexposecli
        short                 : T
        desc                  : The SITE target is used to alter or create the SITE object
    
+     - name                  : SILO
+       desc                  : The SILO target is used to alter or create the SILO object
+   
      - name                  : ASSET
        short                 : A
        desc                  : The ASSET target is used to alter or create the ASSET object
@@ -166,8 +169,24 @@ module Nexposecli
        desc                  : The object id being acted upon
        required              : true
    
+     - name                  : template
+       desc                  : The scan template id of the entity being acted upon
+       required              : true
+   
+     - name                  : silo
+       desc                  : The silo of the entity being acted upon
+       required              : true
+   
      - name                  : site
        desc                  : The site id of the object being acted upon
+       required              : true
+   
+     - name                  : maxusers
+       desc                  : The create silo maximum number of users
+       required              : true
+   
+     - name                  : maxassets
+       desc                  : The create silo maximum number of assets
        required              : true
    
      - name                  : range
@@ -182,6 +201,10 @@ module Nexposecli
      - name                  : argv
        short                 : g
        desc                  : Argument vector for the action, in the form key:value pairs
+       required              : true
+   
+     - name                  : output
+       desc                  : The desired format of the output, default, csv
        required              : true
    
      - name                  : filter
