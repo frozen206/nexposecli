@@ -37,8 +37,11 @@ require 'pp'
 # Set default var values
 $nxport = 3780
 $debug = false
+$filteradd = false
 $format = 'default'
 $dryrun = false
+$norun = false
+$nodload = false
 $multitenant = false
 uf_scanners = ''
 
@@ -290,6 +293,9 @@ if args.scanpath
 end
 
 $debug = TRUE if args.verbose
+$norun = TRUE if args.norun
+$nodload = TRUE if args.nodload
+$filteradd = TRUE if args.filteradd
 $multitenant = TRUE if args.silo
 $dryrun = TRUE if args.dryrun
 uputs("CLI", "Command-line verbosity mode is #{$debug.to_s}")
@@ -315,8 +321,10 @@ uputs("CLI", "Checking for the requested action")
 @action |= 32 if args.run
 @action |= 64 if args.sync
 @action |= 128 if args.copy
+@action |= 256 if args.download
+@action |= 512 if args.status
 uputs("ACTION", "The requested action value is: #{@action.to_s}")
-raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64,128].include?(@action)
+raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64,128,256,512].include?(@action)
 
 uputs("TARGET", "Checking for the requested target")
 @target = 0
@@ -612,6 +620,23 @@ when 2   # TARGET ENGINE
   when 16  # delete
     uputs("ACTION", 'delete ENGINE action requested')
     puts 'Not yet implemented'
+  when 512  # status
+    uputs("ACTION", 'status ENGINE action requested')
+    filter = "Name"
+    filterv = ".*"
+ 
+    if args.filter != nil && args.filterv != nil
+       filter = "#{args.filter}"
+       filterv = "#{args.filterv}"
+    end
+    engines = @nsc.engine_versions 
+    puts '%25s' % "Name" + ' ' + '%10s' % "Status" + ' ' + '%10s' % "Version" + ' ' + '%25s' % "Last Product Update ID" + ' ' + '%25s' % "Last Content Update ID"
+    engines.each do |engine|
+       if engine[filter].match(filterv)
+          upp engine
+          puts '%25s' % engine["Name"] + ' ' + '%10s' % engine["Status"] + ' ' + '%10s' % engine["Version"] + ' ' + '%25s' % engine["Last Product Update ID"] + ' ' + '%25s' % engine["Last Content Update ID"]
+       end
+    end
   else
     uputs("ACTION", 'The action requested is not implemented for target')
     puts 'The action requested is not implemented for target'
@@ -674,9 +699,25 @@ when 8   # TARGET SCAN
   when 1   # create
     uputs("SCAN", 'create SCAN action requested')
     unless (
-      args.id != nil && ( args.range || args.targets )
+      (args.id != nil && ( args.range || args.targets )) || args.id != nil
     )
-      raise 'Please supply the site id and ip range, or targets to scan, see --help'
+      raise 'Please supply the site id OR the site id and ip range, or targets to scan, see --help'
+    end
+
+    if ( args.range == nil && args.targets == nil )
+       # Site Scan only
+       uputs("SCAN", "SCAN action requested for Site Id[#{args.id}]")
+       site = Nexpose::Site.load(@nsc, args.id.to_i)
+       puts 'The SCAN action requested will be submitted'
+       begin
+          scan = site.scan(@nsc)
+       rescue Nexpose::APIError => e
+          STDERR.puts "ERROR [ For Site Id[#{args.id}] #{e.to_s} ]"
+          exit(-1)
+       end
+       puts "The SCAN action requested has been submitted, and is running using: Site Id[#{args.id}] Scan Id[#{scan.id}] Scan Engine/Pool Id[#{scan.id}]"
+       upp scan
+       exit(0)
     end
 
     # CLI args for scan task attempts and sleep interval
@@ -1395,55 +1436,86 @@ when 32  # TARGET ASSET
    end
 when 64  # TARGET REPORT
    case @action
-   when 1   # create
+   when 1, 32   # create and run
       uputs("ACTION", 'create REPORT action requested')
-
-   if (args.id != nil)
-      report_config = Nexpose::ReportConfig.load(@nsc, args.id)
-      report_config.filters.delete_if do |filter|
-         if filter.type == "device"
-           upp filter
-           true
+   if args.name == nil
+      args.name = "Default Report Name"
+   end
+   if (args.id != nil) || (args.template != nil)
+      report_config = nil
+      if args.id != nil
+         report_config = Nexpose::ReportConfig.load(@nsc, args.id)
+         upp report_config
+      elsif args.template != nil
+         report_config = Nexpose::ReportConfig.new(args.name, args.template, args.format, -1)
+         begin
+            report_config.save(@nsc, false)
+         rescue Nexpose::APIError => e
+           uputs("REPORT", "An error occurred while attempting to create the report config: #{e.to_s}")
+           STDERR.puts "ERROR [ " + e.to_s + " ]"
+           exit(-1)
          end
       end
-      uputs("DEBUG", 'report_config.filters post device filter deletion')
+
+      unless $filteradd
+         report_config.filters.delete_if do |filter|
+            # if filter.type == "device"
+            if ["device","site","group"].include?(filter.type)
+              upp filter
+              true
+            end
+         end
+         uputs("DEBUG", 'report_config.filters post device filter deletion')
+      end
       upp(report_config.filters)
 
+      if args.filter && args.filterv
+            uputs("DEBUG", "report_config.filters #{args.filter} : #{args.filterv} ")
+            report_config.add_filter(args.filter.to_s, args.filterv.to_i)
+      end
       if (args.host != nil)
          # EJG pass site id through...
          device = @nsc.find_device_by_address( args.host, args.site)
          if (device != nil)
-            report_config.id = -1
+            # report_config.id = -1
             scan_asset_device_id = device.id.to_i
-            report_config.name = "Asset: " + args.host.to_s + " (" + Time.now.strftime("%Y%m%d%H%M%S") + ")"
+            report_config.name = "#{args.name}: " + args.host.to_s + " (" + Time.now.strftime("%Y%m%d%H%M%S") + ")"
             report_config.add_filter('device', scan_asset_device_id)
             report_config.save(@nsc)
          else
             puts "Device Id is nil. No match found for ip: " + args.host.to_s + "\n"
          end
       else
-         report_config.name = "Default Report Name (" + Time.now.strftime("%Y%m%d%H%M%S") + ")"
+         report_config.name = "#{args.name} (" + Time.now.strftime("%Y%m%d%H%M%S") + ")"
+         report_config.save(@nsc)
       end
-      puts "- Running the report now...\n"
-      report_run = report_config.generate(@nsc)
 
-      # check for report run status
-      report_summary = @nsc.last_report(report_config.id)
-      while report_summary.status != "Generated"
-          puts "- Sleeping... " + report_summary.status.to_s + "\n"
-          sleep(2)
-          report_summary = @nsc.last_report(report_config.id)
+      unless $norun
+         puts "- Running the report now...\n"
+         report_run = report_config.generate(@nsc)
+         puts "- Report job has been submitted.\n"
+
+         unless $nodload
+            # check for report run status
+            report_summary = @nsc.last_report(report_config.id)
+            while report_summary.status != "Generated"
+                puts "- Sleeping... " + report_summary.status.to_s + "\n"
+                sleep(2)
+                report_summary = @nsc.last_report(report_config.id)
+            end
+         end
       end
-      # pp report_summary
 
-      puts "---\n- Report Id: " + report_config.id.to_s + " \n"
-      puts "---\n- The report can be found via:\n https://#{@nsc_server}:3780" + report_summary.uri.to_s + "\n"
+      unless $norun || $nodload
+         puts "---\n- Report Id: " + report_config.id.to_s + " \n"
+         puts "---\n- The report can be found via:\n https://#{@nsc_server}:3780" + report_summary.uri.to_s + "\n"
 
-      report_filename = report_summary.uri.split('/').last
-      if (args.name != nil)
-         report_filename.sub! 'Document', "#{args.name}"
+         report_filename = report_summary.uri.split('/').last
+         if (args.name != nil)
+            report_filename.sub! 'Document', "#{args.name}"
+         end
+         download("https://#{@nsc_server}:3780" + report_summary.uri.to_s, "./#{Time.now.strftime("%Y%m%d_%H%M%S_")}#{report_filename}", @nsc)
       end
-      download("https://#{@nsc_server}:3780" + report_summary.uri.to_s, "./#{Time.now.strftime("%Y%m%d_%H%M%S_")}#{report_filename}", @nsc)
    end
 
    when 2   # list
@@ -1463,6 +1535,29 @@ when 64  # TARGET REPORT
    when 16  # delete
       uputs("ACTION", 'delete REPORT action requested')
       puts 'Not yet implemented'
+   when 256 # download
+      uputs("ACTION", 'download REPORT action requested')
+      # check for report run status
+      report_summary = @nsc.last_report(args.id.to_i)
+      upp report_summary
+      while report_summary.status != "Generated"
+          puts "- Sleeping... " + report_summary.status.to_s + "\n"
+          sleep(2)
+          report_summary = @nsc.last_report(args.id.to_i)
+      end
+
+      puts "---\n- Report Id: " + args.id.to_s + " \n"
+      puts "---\n- The report can be found via:\n https://#{@nsc_server}:3780" + report_summary.uri.to_s + "\n"
+
+      report_filename = report_summary.uri.split('/').last
+      if (args.name != nil)
+         report_filename.sub! 'Document', "#{args.name}"
+      end
+      download("https://#{@nsc_server}:3780" + report_summary.uri.to_s, "./generated#{report_summary.generated_on}_#{report_filename}", @nsc)
+   when 512 # status
+      uputs("ACTION", 'status REPORT action requested')
+      report_summary = @nsc.last_report(args.id.to_i)
+      puts "The report status for report config id[#{args.id}] is: #{report_summary.status}"
    else
       uputs("ACTION", 'The action requested is not implemented for target')
       puts 'The action requested is not implemented for target'

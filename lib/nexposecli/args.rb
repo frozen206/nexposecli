@@ -15,8 +15,20 @@ module Nexposecli
        short                 : v
        desc                  : Run verbosely
    
+     - name                  : filteradd
+       desc                  : Filter mode default is FALSE for replace, if TRUE add
+   
      - name                  : dryrun
        desc                  : Dry run mode, do not commit to Console
+   
+     - name                  : norun
+       desc                  : Do not execute or generate the object affected
+   
+     - name                  : nodload
+       desc                  : Do not download the object affected
+   
+     - name                  : download
+       desc                  : Download the generated Report locally, into the current directory
    
      - comment               : EVM Administrative Actions
    
@@ -34,6 +46,9 @@ module Nexposecli
      - name                  : show
        short                 : s
        desc                  : The show action is used to display details of a single object
+   
+     - name                  : status
+       desc                  : The status action is used to display the status of a single object
    
      - name                  : update
        short                 : u
@@ -205,6 +220,10 @@ module Nexposecli
    
      - name                  : output
        desc                  : The desired format of the output, default, csv
+       required              : true
+   
+     - name                  : format
+       desc                  : The desired format of the report, default is csv
        required              : true
    
      - name                  : filter
