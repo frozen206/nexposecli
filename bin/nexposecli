@@ -1144,11 +1144,24 @@ when 16  # TARGET SITE
       puts "Site was successfully created. The Site Id is: #{site_created}"
    when 2   # list
       uputs("ACTION", 'list SITE action requested')
+      filter = "name"
+      filterv = ".*" 
+ 
+      if args.filter != nil && args.filterv != nil
+         filter = "#{args.filter}"
+         filterv = "#{args.filterv}"
+      end  
+
       site_listing = @nsc.list_sites
+
       site_listing.each do |site|
-        puts("Site: id:#{site.id}\t name:'#{site.name}'\t--description:#{site.description}\n")
+        if site.public_send(filter).match(filterv)
+           puts("Site: id:#{site.id}\t name:'#{site.name}'\t--description:#{site.description}\n")
+           upp site
+        end
       end
-      upp site_listing
+
+
    when 4   # show
       uputs("ACTION", 'show SITE action requested')
       site = ""
