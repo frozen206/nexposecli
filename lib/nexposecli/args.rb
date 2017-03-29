@@ -157,6 +157,10 @@ module Nexposecli
        desc                  : The target role name
        required              : true
    
+     - name                  : days
+       desc                  : The number of days since updated or last login
+       required              : true
+   
      - name                  : email
        desc                  : The target email address
        required              : true

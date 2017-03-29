@@ -1,4 +1,4 @@
-#!/usr/bin/env ruby
+#!/usr/bin/env ruby -W0
 ##############################################################################
 #
 # File:    	nexposecli
@@ -258,6 +258,12 @@ def validate_searchstring(sfstr)
   else
      valid_searchstring = "ERROR" 
   end
+end
+
+def days_since_str(date_string)
+   # Parse a date string and calculate the number of days since the date
+   days = Date.today - Date.parse(date_string)
+   return days.to_i
 end
 
 ##############################################################################
@@ -630,11 +636,26 @@ when 2   # TARGET ENGINE
        filterv = "#{args.filterv}"
     end
     engines = @nsc.engine_versions 
-    puts '%25s' % "Name" + ' ' + '%10s' % "Status" + ' ' + '%10s' % "Version" + ' ' + '%25s' % "Last Product Update ID" + ' ' + '%25s' % "Last Content Update ID"
+    puts '%45s' % "Name" + ' ' + '%18s' % "Status" + ' ' + '%10s' % "Version" + ' ' + '%25s' % "Last Product Update ID" + ' ' + '%25s' % "Last Content Update ID"
     engines.each do |engine|
+       daysProduct = 0
+       daysContent = 0
+       daysNote = ''
+
        if engine[filter].match(filterv)
           upp engine
-          puts '%25s' % engine["Name"] + ' ' + '%10s' % engine["Status"] + ' ' + '%10s' % engine["Version"] + ' ' + '%25s' % engine["Last Product Update ID"] + ' ' + '%25s' % engine["Last Content Update ID"]
+          if args.days != nil
+             daysProduct = days_since_str(engine["Last Product Update ID"])
+             daysContent = days_since_str(engine["Last Content Update ID"])
+             if daysProduct >= args.days.to_i
+                daysNote = " PRODUCT UPDATES ARE OLD BY #{daysProduct} DAYS"
+             elsif daysContent >= args.days.to_i
+                daysNote = " CONTENT UPDATES ARE OLD BY #{daysContent} DAYS"
+             else
+                next
+             end
+          end
+          puts '%45s' % engine["Name"] + ' ' + '%18s' % engine["Status"] + ' ' + '%10s' % engine["Version"] + ' ' + '%25s' % engine["Last Product Update ID"] + ' ' + '%25s' % engine["Last Content Update ID"] + daysNote
        end
     end
   else
@@ -999,7 +1020,7 @@ when 8   # TARGET SCAN
       puts "End of a single scan task\n"
 
       end
-      logout_success = @nsc.logout
+      # logout_success = @nsc.logout
       # END of Target Ranges loop
       if targets_sha2
          File.open("." + targets_sha2, 'w') {|f| f.write("COMPLETED") }
