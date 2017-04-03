@@ -1,4 +1,4 @@
-#!/usr/bin/env ruby -W0
+#!/usr/bin/env ruby
 ##############################################################################
 #
 # File:    	nexposecli
@@ -19,6 +19,7 @@
 #
 ##############################################################################
 require 'rubygems'
+require 'io/console'
 require 'nexpose'
 require 'nexposecli'
 require 'socket'
@@ -110,8 +111,9 @@ def read_config(conf)
   config = YAML.load_file(conf)
 
   @nsc_server = config["config"]["server"]
-  @nsc_port = config["config"]["port"]
-  if @nsc_port.nil?
+  if config["config"].key?("port")
+     @nsc_port = config["config"]["port"]
+  else
      @nsc_port = $nxport
   end
   @nsc_user   = config["config"]["user"]
