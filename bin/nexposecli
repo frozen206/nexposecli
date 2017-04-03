@@ -35,6 +35,7 @@ require 'pp'
 
 ##############################################################################
 # Set default var values
+$nopasswd = false
 $nxport = 3780
 $debug = false
 $filteradd = false
@@ -51,6 +52,7 @@ uf_scanners = ''
 @logfile = "nexposecli" + Time.now.strftime("%Y%m") + ".log"
 @evm_reqid = SecureRandom.hex
 @nsc_server = "<server>" 
+@nsc_port = "<port>" 
 @nsc_user   = "<user>"
 @nsc_passwd = "<pass>"
 @nsc_sites = Hash.new
@@ -108,8 +110,16 @@ def read_config(conf)
   config = YAML.load_file(conf)
 
   @nsc_server = config["config"]["server"]
+  @nsc_port = config["config"]["port"]
+  if @nsc_port.nil?
+     @nsc_port = $nxport
+  end
   @nsc_user   = config["config"]["user"]
   @nsc_passwd   = config["config"]["password"]
+  if @nsc_passwd.nil?
+     puts "A console password was not provided via config file.\nWhat password shall I use?"
+     @nsc_passwd = STDIN.noecho(&:gets).chomp
+  end
   @nsc_sites = config["sites"]
   if config["config"].key?("ldapserver")
      @ldapserver = config["config"]["ldapserver"]
@@ -329,8 +339,9 @@ uputs("CLI", "Checking for the requested action")
 @action |= 128 if args.copy
 @action |= 256 if args.download
 @action |= 512 if args.status
+@action |= 1024 if args.exception
 uputs("ACTION", "The requested action value is: #{@action.to_s}")
-raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64,128,256,512].include?(@action)
+raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64,128,256,512,1024].include?(@action)
 
 uputs("TARGET", "Checking for the requested target")
 @target = 0
@@ -379,9 +390,9 @@ end
 uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
 begin
   if $multitenant
-     @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, $nxport, args.silo.to_s)
+     @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, @nsc_port.to_s, args.silo.to_s)
   else
-     @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+     @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, @nsc_port.to_s)
   end
 rescue SystemCallError => e
   # EJG add conditional api error handling...
@@ -797,9 +808,9 @@ when 8   # TARGET SCAN
       uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
       begin
         if $multitenant
-           @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, $nxport, args.silo.to_s)
+           @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, @nsc_port.to_s, args.silo.to_s)
         else
-           @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+           @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, @nsc_port.to_s)
         end
         @nsc.login
       rescue SystemCallError => e
@@ -887,9 +898,9 @@ when 8   # TARGET SCAN
         uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
         begin
           if $multitenant
-             @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, $nxport, args.silo.to_s)
+             @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, @nsc_port.to_s, args.silo.to_s)
           else
-             @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+             @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, @nsc_port.to_s)
           end
           @nsc.login
         rescue SystemCallError => e
@@ -991,9 +1002,9 @@ when 8   # TARGET SCAN
          uputs("CONNECT", "Attempting connection to NSC: #{@nsc_server.to_s} with user: #{@nsc_user.to_s}")
          begin
            if $multitenant
-              @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, $nxport, args.silo.to_s)
+              @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, @nsc_port.to_s, args.silo.to_s)
            else
-              @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s)
+              @nsc = Nexpose::Connection.new( @nsc_server.to_s, @nsc_user.to_s, @nsc_passwd.to_s, @nsc_port.to_s)
            end
            @nsc.login
          rescue SystemCallError => e

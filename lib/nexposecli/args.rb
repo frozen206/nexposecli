@@ -36,6 +36,10 @@ module Nexposecli
        short                 : c
        desc                  : The create action is used for new objects
    
+     - name                  : exception
+       short                 : x
+       desc                  : The exception action is used for vuln objects
+   
      - name                  : copy
        desc                  : The copy action is used to copy of objects of the same type
    
