@@ -63,6 +63,7 @@ where ./lab.yaml consists of the following:
 
     config:
        server: 10.10.10.10
+       port: 3780
        user: nxuser
        password: password
 
