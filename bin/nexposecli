@@ -1746,6 +1746,10 @@ when 512  # TARGET DASSET
             uputs("ACTION", 'update DASSET action requested')
             dag = Nexpose::DynamicAssetGroup.load(@nsc, args.id.to_i)
             dag.criteria.criteria << asset_crit
+            if args.match
+               dag.criteria.match = "#{args.match.to_s}"
+            end
+            upp dag.criteria.criteria
          end
          uputs("DASSET", "Attempting save the DynamicAssetGroup: #{@dag_name.to_s}")
          begin

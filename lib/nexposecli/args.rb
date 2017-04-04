@@ -212,6 +212,10 @@ module Nexposecli
        desc                  : The create silo maximum number of assets
        required              : true
    
+     - name                  : match
+       desc                  : The match type for asset and vuln filters, AND OR
+       required              : true
+   
      - name                  : range
        short                 : r
        desc                  : The comma separated (begin,end) range of ip addresses to be acted upon
