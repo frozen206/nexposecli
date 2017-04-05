@@ -109,16 +109,28 @@ end
 def read_config(conf)
   # add check for file existence and perms
   config = YAML.load_file(conf)
+  begin
+     if config["config"].key?("server")
+        @nsc_server = config["config"]["server"]
+     else
+        puts "The config yaml file does not contain a valid [server] parameter.\nPlease confirm the yaml file is well-formed and complete."
+        exit(-1)
+     end
+  rescue NoMethodError => e
+     puts "The config yaml file does not to be well-formed and complete.\nThe config: appears to be null.\nPlease edit the config file and try again."
+     STDERR.puts "ERROR [ " + e.to_s + " ]"
+     exit(-1)
+  end
 
-  @nsc_server = config["config"]["server"]
   if config["config"].key?("port")
      @nsc_port = config["config"]["port"]
   else
      @nsc_port = $nxport
   end
   @nsc_user   = config["config"]["user"]
-  @nsc_passwd   = config["config"]["password"]
-  if @nsc_passwd.nil?
+  if config["config"].key?("password")
+     @nsc_passwd   = config["config"]["password"]
+  else
      puts "A console password was not provided via config file.\nWhat password shall I use?"
      @nsc_passwd = STDIN.noecho(&:gets).chomp
   end
