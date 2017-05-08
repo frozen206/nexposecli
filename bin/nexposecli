@@ -1757,7 +1757,23 @@ when 512  # TARGET DASSET
          else
             uputs("ACTION", 'update DASSET action requested')
             dag = Nexpose::DynamicAssetGroup.load(@nsc, args.id.to_i)
-            dag.criteria.criteria << asset_crit
+
+            # determine if this is an append or replace update
+            if args.action
+               # actions = name, add criteria, match, flush and replace criteria, consider help to display valid search criteria
+               # filter = Field, Operator, Value
+               case args.action
+               when "name"
+                  dag.name = args.filter.to_s
+               when "append" # append new criteria
+                  dag.criteria.criteria << asset_crit
+               when "replace" # replace criteria
+                  dag.criteria.criteria.clear
+                  dag.criteria.criteria << asset_crit
+               else
+                  puts 'The action requested is not implemented for target'
+               end
+            end
             if args.match
                dag.criteria.match = "#{args.match.to_s}"
             end
