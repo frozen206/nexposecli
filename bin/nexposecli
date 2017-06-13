@@ -355,8 +355,9 @@ uputs("CLI", "Checking for the requested action")
 @action |= 512 if args.status
 @action |= 1024 if args.exception
 @action |= 2048 if args.schedule
+@action |= 4096 if args.search
 uputs("ACTION", "The requested action value is: #{@action.to_s}")
-raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64,128,256,512,1024.2048].include?(@action)
+raise "You can only submit one action per task, see --help (action submitted: #{@action.to_s})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096].include?(@action)
 
 uputs("TARGET", "Checking for the requested target")
 @target = 0
@@ -1772,6 +1773,8 @@ when 512  # TARGET DASSET
          elsif field_str == "CVSS_SCORE"
             # test for float, and possibly IN_RANGE op
             valid_filterv = [7.0]
+         elsif field_str == "SCAN_DATE"
+            valid_filterv = [args.filterv.to_i]
          elsif field_str == "RISK_SCORE" || field_str == "SITE_ID"
             # test for fixnum, and possibly IN_RANGE op
             valid_filterv = [args.filterv.to_i]
@@ -1916,10 +1919,18 @@ when 512  # TARGET DASSET
          puts 'The Dynamic Asset Group Id must be numeric.'
       end
    when 16  # delete
-      # EJG
       uputs("ACTION", 'delete DASSET action requested')
       @nsc.delete_asset_group(args.id.to_i)
       puts "DASSET id #{args.id.to_s} has been deleted."
+   when 4096  # search
+      uputs("ACTION", 'search DASSET action requested')
+      fgroup = @nsc.groups.select {|group|group.name == args.name }
+      if !fgroup.empty?
+         upp(fgroup)
+         puts "DASSET id:#{fgroup[0].id}"
+      else
+         puts "DASSET id was not found."
+      end
    else
       uputs("ACTION", 'The action requested is not implemented for target')
       puts 'The action requested is not implemented for target'

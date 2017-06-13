@@ -54,6 +54,9 @@ module Nexposecli
        short                 : s
        desc                  : The show action is used to display details of a single object
    
+     - name                  : search
+       desc                  : The search action is used to find or locate the id of a single object by name
+   
      - name                  : status
        desc                  : The status action is used to display the status of a single object
    
