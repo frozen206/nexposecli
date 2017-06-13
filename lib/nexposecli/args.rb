@@ -36,6 +36,9 @@ module Nexposecli
        short                 : c
        desc                  : The create action is used for new objects
    
+     - name                  : schedule
+       desc                  : The exception action is used for vuln objects
+   
      - name                  : exception
        short                 : x
        desc                  : The exception action is used for vuln objects
