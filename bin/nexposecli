@@ -2029,7 +2029,6 @@ when 1024  # TARGET TAG
             valid_filterv = ["ERROR"]
          end
          uputs("TAG", "The filterv value passed: #{args.filterv} vs the validated value: #{valid_filterv.to_s}")
-      else
       end
 
       if isValid
@@ -2051,19 +2050,40 @@ when 1024  # TARGET TAG
          else
             uputs("ACTION", 'update TAG action requested')
             tag = Nexpose::Tag.load(@nsc, args.id.to_i)
-            tag.search_criteria << asset_crit
+
+            # determine if this is an append or replace update
+            if args.action
+               # actions = name, add criteria, match, flush and replace criteria, consider help to display valid search criteria
+               # filter = Field, Operator, Value
+               case args.action
+               when "append" # append new criteria
+                  tag.search_criteria.criteria << asset_crit
+               when "replace" # replace criteria
+                  tag.search_criteria.clear
+                  tag.search_criteria.criteria << asset_crit
+               else 
+                  puts 'The action requested is not implemented for target'
+               end  
+            else  
+               tag.search_criteria.criteria << asset_crit
+            end  
          end
          uputs("TAG", "Attempting save the Tag: #{@tag_name.to_s}")
-         begin
+         if args.match
+            tag.search_criteria.match = "#{args.match.to_s}"
+         end  
+         upp tag.search_criteria
+
+         # begin
             if tag.save(@nsc)
                puts "Tag was successfully created/updated - id: #{tag.id.to_s.ljust(10)} name: \"#{tag.name.to_s}\""
             else
                puts "Tag create/update failed - name: \"#{tag.name.to_s}\""
             end
-         rescue Nexpose::APIError => e
-            uputs("TAG", "An error occurred while attempting to save the Tag: #{e.to_s}")
-            STDERR.puts "ERROR [ " + e.to_s + " ]"
-         end
+         # rescue Nexpose::APIError => e
+         #    uputs("TAG", "An error occurred while attempting to save the Tag: #{e.to_s}")
+         #    STDERR.puts "ERROR [ " + e.to_s + " ]"
+         # end
          upp tag
 
          # End of TAG list loop

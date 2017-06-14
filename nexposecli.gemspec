@@ -18,7 +18,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.required_ruby_version = '>= 2.1'
-  spec.add_runtime_dependency 'nexpose', '~> 5.3', '>= 5.3.1'
+  spec.add_runtime_dependency 'nexpose', '~> 6.0', '>= 6.0.0'
   spec.add_runtime_dependency "netaddr", '~> 1.5', '>= 1.5.1'
   spec.add_runtime_dependency "net-ldap", '~> 0.14', '>= 0.14.0'
 
