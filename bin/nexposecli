@@ -1214,8 +1214,19 @@ when 16  # TARGET SITE
       site_listing.each do |site|
         if site.public_send(filter).match(filterv)
            siteDetails = Nexpose::Site.load(@nsc, site.id)
-           puts("Site: id:#{site.id}\t name:'#{site.name}'\ttemplate:#{siteDetails.scan_template_id}\t--description:#{site.description}\n")
            upp siteDetails
+           if args.action
+              case args.action
+              when "noschedule"
+                 puts("Site: [#{site.name}] Id: [#{site.id}] has [#{siteDetails.schedules.length}] schedules defined") unless siteDetails.schedules.length > 0
+              when "numschedules"
+                 puts("Site: [#{site.name}] Id: [#{site.id}] has [#{siteDetails.schedules.length}] schedules defined")
+              else
+                 puts("Site: id:#{site.id}\t name:'#{site.name}'\ttemplate:#{siteDetails.scan_template_id}\t--description:#{site.description}\n")
+              end
+           else
+              puts("Site: id:#{site.id}\t name:'#{site.name}'\ttemplate:#{siteDetails.scan_template_id}\t--description:#{site.description}\n")
+           end
         end
       end
 
@@ -1428,10 +1439,13 @@ when 32  # TARGET ASSET
    when 4   # show
       uputs("ACTION", 'show ASSET action requested')
       if is_numeric(args.id)
-         asset = Nexpose::Asset.load(@nsc, args.id)
-         # upp(asset.vulnerability_instances)
-         # upp(asset.vulnerabilities)
-         upp(asset.services)
+         begin
+            asset = Nexpose::Asset.load(@nsc, args.id)
+         rescue Nexpose::APIError => e
+            uputs("ASSET", "An error occurred while attempting to load the asset: #{e.to_s}")
+            STDERR.puts "ERROR [ " + e.to_s + " OR the Asset Id provided no longer exists. ]"
+            exit(-1)
+         end
       else
          puts 'The Asset Id must be numeric.'
       end
@@ -1539,7 +1553,9 @@ when 32  # TARGET ASSET
       end
    when 16  # delete
       uputs("ACTION", 'delete ASSET action requested')
-      puts 'Not yet implemented'
+      if is_numeric(args.id)
+         puts(@nsc.delete_device(args.id))
+      end
    else
       uputs("ACTION", 'The action requested is not implemented for target')
       puts 'The action requested is not implemented for target'
