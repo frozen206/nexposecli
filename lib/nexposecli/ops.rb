@@ -3,7 +3,7 @@ require 'set'
 module Nexposecli
    # Allowed Search and Filter Operators by field, in Set form
    CVSS_SCORE_OPS = Set["IS", "IS_NOT", "IN_RANGE", "GREATER_THAN", "LESS_THAN"]
-   IP_RANGE_OPS   = Set["IN_RANGE", "NOT_IN"]
+   IP_RANGE_OPS   = Set["IN", "IN_RANGE", "NOT_IN_RANGE", "NUMERIC", "IS", "IS_NOT"]
    OS_OPS         = Set["CONTAINS", "NOT_CONTAINS", "IS_EMPTY", "IS_NOT_EMPTY"]
    RISK_SCORE_OPS = Set["IS", "IS_NOT", "IN_RANGE", "GREATER_THAN", "LESS_THAN"]
    SITE_ID_OPS    = Set["IN", "NOT_IN"]
