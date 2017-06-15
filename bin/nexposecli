@@ -2074,16 +2074,16 @@ when 1024  # TARGET TAG
          end  
          upp tag.search_criteria
 
-         # begin
+         begin
             if tag.save(@nsc)
                puts "Tag was successfully created/updated - id: #{tag.id.to_s.ljust(10)} name: \"#{tag.name.to_s}\""
             else
                puts "Tag create/update failed - name: \"#{tag.name.to_s}\""
             end
-         # rescue Nexpose::APIError => e
-         #    uputs("TAG", "An error occurred while attempting to save the Tag: #{e.to_s}")
-         #    STDERR.puts "ERROR [ " + e.to_s + " ]"
-         # end
+         rescue Nexpose::APIError => e
+            uputs("TAG", "An error occurred while attempting to save the Tag: #{e.to_s}")
+            STDERR.puts "ERROR [ " + e.to_s + " ]"
+         end
          upp tag
 
          # End of TAG list loop
