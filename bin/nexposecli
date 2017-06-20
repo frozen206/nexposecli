@@ -380,8 +380,9 @@ uputs("TARGET", "Checking for the requested target")
 @target |= 65536  if args.GROUP
 @target |= 131072  if args.SCHEDULE
 @target |= 262144  if args.SILO
+@target |= 524288  if args.SEARCH
 uputs("TARGET", "The requested target value is: #{@target.to_s}")
-raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144].include?(@target)
+raise "You can only submit one target per task, see --help (#{@target})" unless [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288].include?(@target)
 
 # Needs to potentially move into TARGET object or module instance var
 ## First NSC Connection and Session creation
@@ -2373,6 +2374,18 @@ when 262144  # TARGET SILO
          puts "#{silo.id.to_s.ljust(15)} #{silo.profile_id.ljust(15)} #{silo.max_users.rjust(10)} #{silo.max_assets.rjust(15)} #{silo.name}"
          upp silo
       end
+   else
+      uputs("ACTION", 'The action requested is not implemented for target')
+      puts 'The action requested is not implemented for target'
+   end
+when 524288  # TARGET SEARCH
+   case @action
+   when 32   # run
+      uputs("ACTION", 'run SEARCH action requested')
+      criterion = Nexpose::Criterion.new(Nexpose::Search::CVE_ID, Nexpose::Search::Operator::IS, args.id)
+      criteria = Nexpose::Criteria.new([criterion])
+      results = @nsc.search(criteria)
+      upp results
    else
       uputs("ACTION", 'The action requested is not implemented for target')
       puts 'The action requested is not implemented for target'

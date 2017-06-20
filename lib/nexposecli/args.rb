@@ -106,6 +106,9 @@ module Nexposecli
      - name                  : SILO
        desc                  : The SILO target is used to alter or create the SILO object
    
+     - name                  : SEARCH
+       desc                  : The SEARCH target is used to locate other objects
+   
      - name                  : ASSET
        short                 : A
        desc                  : The ASSET target is used to alter or create the ASSET object
